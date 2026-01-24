@@ -1,0 +1,192 @@
+from flask import Flask, render_template_string, Response
+import json
+import time
+import io
+import threading
+
+# Import camera library safely (so code runs even if camera fails)
+try:
+    import picamera
+    CAMERA_AVAILABLE = True
+except ImportError:
+    CAMERA_AVAILABLE = False
+    print("Camera library not found. Running in Telemetry-Only mode.")
+
+app = Flask(__name__)
+
+# --- OPTICAL SENSOR STREAM ---
+def gen_frames():
+    if not CAMERA_AVAILABLE:
+        return
+
+    # We use low resolution (640x480) to keep the single-core CPU free 
+    # for handling the MQTT swarm data.
+    with picamera.PiCamera() as camera:
+        camera.resolution = (640, 480)
+        camera.framerate = 24
+        time.sleep(2) # Warmup
+        
+        stream = io.BytesIO()
+        for _ in camera.capture_continuous(stream, 'jpeg', use_video_port=True):
+            stream.seek(0)
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + stream.read() + b'\r\n')
+            stream.seek(0)
+            stream.truncate()
+
+# --- HUD INTERFACE ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HIVE RESEARCH TERMINAL</title>
+    <style>
+        body { 
+            background-color: #000; color: #0f0; 
+            font-family: 'Courier New', monospace; 
+            margin: 0; padding: 20px;
+            overflow: hidden;
+        }
+        h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+        
+        /* SPLIT SCREEN LAYOUT */
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            height: 90vh;
+        }
+
+        .panel {
+            border: 1px solid #333;
+            background: #050505;
+            position: relative;
+        }
+        .panel-header {
+            background: #111;
+            color: #aaa;
+            padding: 5px 10px;
+            font-size: 12px;
+            border-bottom: 1px solid #333;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        img.feed { width: 100%; height: auto; display: block; opacity: 0.9; }
+
+        /* RADAR VISUALIZATION */
+        #map-container { 
+            position: relative; 
+            width: 100%; height: 100%; 
+            display: flex; justify-content: center; align-items: center; 
+        }
+        canvas { border: 1px solid #222; }
+        .drone-label { 
+            position: absolute; color: white; font-weight: bold; font-size: 10px; 
+            text-shadow: 0 0 2px #000; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <h2>/// HIVE MIND: RESEARCH TERMINAL ///</h2>
+    
+    <div class="container">
+        <div class="panel">
+            <div class="panel-header">Optical Sensor (Live)</div>
+            <img class="feed" src="/video_feed">
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">Swarm Telemetry</div>
+            <div id="map-container">
+                <canvas id="hiveMap" width="500" height="500"></canvas>
+                <div id="overlays"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('hiveMap');
+        const ctx = canvas.getContext('2d');
+        const overlays = document.getElementById('overlays');
+        const gridSize = 50;
+        const scale = 500 / gridSize; 
+
+        function getColor(value) {
+            // Heatmap: Black -> Red -> White (Research Standard)
+            if (value < 5) return `rgb(0,0,0)`;
+            if (value < 50) return `rgb(${value*5}, 0, 0)`; 
+            if (value < 150) return `rgb(255, ${value}, 0)`; 
+            return `rgb(255, 255, ${Math.min(255, value-100)})`;
+        }
+
+        async function fetchState() {
+            try {
+                const response = await fetch('/data');
+                const data = await response.json();
+                drawMap(data.grid);
+                drawDrones(data.drones);
+            } catch (e) { }
+        }
+
+        function drawMap(grid) {
+            for (let x = 0; x < gridSize; x++) {
+                for (let y = 0; y < gridSize; y++) {
+                    ctx.fillStyle = getColor(grid[x][y]);
+                    ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                }
+            }
+        }
+
+        function drawDrones(drones) {
+            overlays.innerHTML = ''; 
+            const now = Date.now() / 1000;
+            for (const [id, drone] of Object.entries(drones)) {
+                if (now - drone.last_seen > 10) continue;
+                
+                const el = document.createElement('div');
+                el.className = 'drone-label';
+                
+                const screenX = drone.x * scale + 10; 
+                const screenY = (gridSize - 1 - drone.y) * scale - 10;
+                
+                el.style.left = screenX + 'px';
+                el.style.top = screenY + 'px';
+                el.innerHTML = `[${id}]<br><span style="color:#888">${drone.rssi}dB</span>`;
+                overlays.appendChild(el);
+                
+                // Target Reticle
+                ctx.strokeStyle = '#0f0';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+        }
+        setInterval(fetchState, 100);
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/video_feed')
+def video_feed():
+    if CAMERA_AVAILABLE:
+        return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    else:
+        return "Optical Sensor Offline"
+
+@app.route('/data')
+def data():
+    try:
+        with open("hive_state.json", "r") as f:
+            return json.load(f)
+    except:
+        return {"grid": [], "drones": {}}
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
