@@ -3,30 +3,32 @@ from bleak import BleakScanner
 import paho.mqtt.client as mqtt
 import struct
 
-# MQTT Setup (Updated for new API)
+# MQTT Setup
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, 60)
 client.loop_start()
 
 def detection_callback(device, advertisement_data):
-    # Filter for our Drone ID (0xFFFF)
+    # Filter for our Hive ID (0xFFFF)
     if 0xFFFF in advertisement_data.manufacturer_data:
         data = advertisement_data.manufacturer_data[0xFFFF]
         
         if len(data) == 4:
             x, y, intensity = struct.unpack('<BBH', data)
+            rssi = advertisement_data.rssi
             
-            # --- NEW: GET PHYSICAL DISTANCE (RSSI) ---
-            rssi = advertisement_data.rssi  # This is the signal strength (e.g., -55)
+            # --- NEW: IDENTIFY THE DRONE ---
+            # device.address is the MAC address (e.g., AA:BB:CC:11:22:33)
+            # We take the last 5 chars to make a short name like "22:33"
+            drone_id = device.address[-5:]
             
-            # Print it so we can see the physics in action
-            print(f"Drone at [{x},{y}] | Signal: {rssi}dBm")
+            print(f"[{drone_id}] Pos: [{x},{y}] | Signal: {rssi}dBm")
             
-            # We append the RSSI to the message so the Brain can use it
+            # We send the ID to the brain too, just in case
             client.publish("hive/deposit", f"{x},{y},{intensity},{rssi}")
 
 async def main():
-    print("--- HIVE EAR LISTENING (With RSSI) ---")
+    print("--- HIVE EAR LISTENING (Swarm Mode) ---")
     scanner = BleakScanner(detection_callback)
     await scanner.start()
     while True:
