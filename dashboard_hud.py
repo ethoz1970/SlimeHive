@@ -1,10 +1,13 @@
-from flask import Flask, render_template_string, Response
+from flask import Flask, render_template_string, Response, request
 import json
 import time
 import io
 import subprocess
 import paho.mqtt.client as mqtt
-from PIL import Image  # The new eye
+from PIL import Image
+import glob
+import csv
+import os  # The new eye
 
 app = Flask(__name__)
 
@@ -79,7 +82,19 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <h2>/// HIVE MIND: RESEARCH TERMINAL /// <span id="sun-status" style="float:right; font-size: 14px; color: #888;">SUN: SYNCING...</span></h2>
+    <h2>
+        /// HIVE MIND: RESEARCH TERMINAL /// 
+        <span style="float:right; font-size: 14px; margin-left: 20px;">
+            <select id="time-filter" style="background:#000; color:#0f0; border:1px solid #333; font-family:monospace; padding:2px;">
+                <option value="live">LIVE (10s)</option>
+                <option value="60">1 Minute</option>
+                <option value="600">10 Minutes</option>
+                <option value="3600">1 Hour</option>
+                <option value="14400">4 Hours</option>
+            </select>
+        </span>
+        <span id="sun-status" style="float:right; font-size: 14px; color: #888;">SUN: SYNCING...</span>
+    </h2>
     <div class="container">
         <div class="panel">
             <div class="panel-header">Optical Sensor (Live Analysis)</div>
@@ -100,6 +115,7 @@ HTML_TEMPLATE = """
         const ctx = canvas.getContext('2d');
         const overlays = document.getElementById('overlays');
         const droneCounter = document.getElementById('drone-counter');
+        const timeFilter = document.getElementById('time-filter');
         const gridSize = 50;
         const scale = 500 / gridSize; 
 
@@ -112,24 +128,70 @@ HTML_TEMPLATE = """
 
         async function fetchState() {
             try {
+                // If filtering history, don't spam the status endpoint for map data
+                // checking value...
+                const window = timeFilter.value;
+                
+                // 1. Always get live mood/count data (lightweight)
                 const response = await fetch('/data');
                 const data = await response.json();
                 
-                // Update Sun Status
-                const sunStatus = document.getElementById('sun-status');
-                if (data.mood === "FRENZY") {
-                    sunStatus.innerText = "SUN: DAY";
-                    sunStatus.style.color = "#ff0";
-                } else if (data.mood === "SLEEP") {
-                    sunStatus.innerText = "SUN: NIGHT";
-                    sunStatus.style.color = "#44f";
-                } 
-                // Else: Do nothing, keep previous state or default "SYNCING..."
-
+                updateSunStatus(data.mood);
+                
+                // 2. Decide what to draw
                 drawMap(data.grid);
                 drawQueen();
-                drawDrones(data.drones);
+                drawSentinel();
+                
+                if (window === "live") {
+                    drawDrones(data.drones);
+                } else {
+                    // Fetch and draw history
+                    fetchHistory(window);
+                    // Still show current active count but maybe indicate it's history view?
+                    // Actually, let's keep the drone list live, but the MAP shows history.
+                     drawDrones(data.drones, true); # Pass true to hide standard trails/dots to avoid clutter?
+                }
+                
             } catch (e) { }
+        }
+        
+        function updateSunStatus(mood) {
+             const sunStatus = document.getElementById('sun-status');
+            if (mood === "FRENZY") {
+                sunStatus.innerText = "SUN: DAY";
+                sunStatus.style.color = "#ff0";
+            } else if (mood === "SLEEP") {
+                sunStatus.innerText = "SUN: NIGHT";
+                sunStatus.style.color = "#44f";
+            }
+        }
+
+        async function fetchHistory(window) {
+             try {
+                const res = await fetch(`/history_data?window=${window}`);
+                const history = await res.json();
+                drawHistoryTrails(history);
+            } catch(e) {}
+        }
+        
+        function drawHistoryTrails(history) {
+            // Draw long trails
+            for (const [id, points] of Object.entries(history)) {
+                if (points.length < 2) continue;
+                
+                ctx.beginPath();
+                ctx.strokeStyle = '#0f0'; // Default history color
+                ctx.globalAlpha = 0.3;
+                ctx.lineWidth = 1;
+                
+                ctx.moveTo(points[0][0] * scale + scale/2, (gridSize - 1 - points[0][1]) * scale + scale/2);
+                for (let i = 1; i < points.length; i++) {
+                     ctx.lineTo(points[i][0] * scale + scale/2, (gridSize - 1 - points[i][1]) * scale + scale/2);
+                }
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
+            }
         }
 
         function drawMap(grid) {
@@ -164,48 +226,67 @@ HTML_TEMPLATE = """
             ctx.fillText("Q", px - 3.5, py + 3.5);
         }
 
-        function drawDrones(drones) {
+        function drawSentinel() {
+            // The Sentinel sits at 10, 10
+            const x = 10;
+            const y = 10;
+            const px = x * scale;
+            const py = (gridSize - 1 - y) * scale;
+
+            // Draw Icon (Blue Triangle)
+            ctx.fillStyle = '#0af'; // Bright Blue
+            ctx.beginPath();
+            ctx.moveTo(px, py - 8);     // Top
+            ctx.lineTo(px + 8, py + 8); // Bottom Right
+            ctx.lineTo(px - 8, py + 8); // Bottom Left
+            ctx.closePath();
+            ctx.fill();
+
+            // Overlay Label
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px monospace';
+            ctx.fillText("S", px - 3.5, py + 6);
+        }
+
+        function drawDrones(drones, historyMode=false) {
             overlays.innerHTML = ''; 
             const now = Date.now() / 1000;
             let activeCount = 0;
             
             for (const [id, drone] of Object.entries(drones)) {
-                // Ghost Trails: Show everyone, but color code them
+                // ... (Logic to count active/warning/red) ...
                 const diff = now - drone.last_seen;
-                let color = '#f00'; // > 30s
+                let color = '#f00'; 
+                if (diff < 10) { color = '#0f0'; activeCount++; }
+                else if (diff <= 30) { color = '#ff0'; }
                 
-                if (diff < 10) {
-                    color = '#0f0'; // Active
-                    activeCount++;
-                } else if (diff <= 30) {
-                    color = '#ff0'; // Warning
-                }
-                
+                // Always add label to overlay
                 const el = document.createElement('div');
                 el.className = 'drone-label';
                 el.style.left = (drone.x * scale + 10) + 'px';
                 el.style.top = ((gridSize - 1 - drone.y) * scale - 10) + 'px';
                 el.innerHTML = `[${id}]<br><span style="color:#888">${drone.rssi}dB</span>`;
-                el.style.color = color; // Label color
+                el.style.color = color; 
                 overlays.appendChild(el);
                 
-                ctx.strokeStyle = color; // Circle color
+                // Draw Current Position Dot
+                ctx.strokeStyle = color; 
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
                 ctx.stroke();
 
-                // Draw Trail
-                if (drone.trail && drone.trail.length > 1) {
+                // Draw Live Trail (Last 10 steps) ONLY if NOT in History Mode
+                if (!historyMode && drone.trail && drone.trail.length > 1) {
                     ctx.beginPath();
                     ctx.strokeStyle = color; 
-                    ctx.globalAlpha = 0.4; // Faint trail
+                    ctx.globalAlpha = 0.4; 
                     ctx.moveTo(drone.trail[0][0] * scale + scale/2, (gridSize - 1 - drone.trail[0][1]) * scale + scale/2);
                     for (let i = 1; i < drone.trail.length; i++) {
                         ctx.lineTo(drone.trail[i][0] * scale + scale/2, (gridSize - 1 - drone.trail[i][1]) * scale + scale/2);
                     }
                     ctx.stroke();
-                    ctx.globalAlpha = 1.0; // Reset opacity
+                    ctx.globalAlpha = 1.0; 
                 }
             }
             
@@ -258,6 +339,46 @@ def data():
             return json.load(f)
     except:
         return {"grid": [], "drones": {}}
+
+@app.route('/history_data')
+def history_data():
+    try:
+        window = int(request.args.get('window', 60))
+        now = time.time()
+        cutoff = now - window
+        
+        # Find latest log file
+        list_of_files = glob.glob('flight_logs/*.csv') 
+        if not list_of_files:
+            return {}
+            
+        latest_file = max(list_of_files, key=os.path.getctime)
+        
+        history = {} # {id: [[x,y], [x,y]]}
+        
+        with open(latest_file, 'r') as f:
+            reader = csv.reader(f)
+            next(reader, None) # skip header
+            for row in reader:
+                if not row: continue
+                # format: timestamp, drone_id, x, y, intensity, rssi
+                try:
+                    ts = float(row[0])
+                    if ts > cutoff:
+                        did = row[1]
+                        x = int(row[2])
+                        y = int(row[3])
+                        
+                        if did not in history: 
+                            history[did] = []
+                        history[did].append([x,y])
+                except ValueError:
+                    continue
+                    
+        return history
+    except Exception as e:
+        print(f"History Error: {e}")
+        return {}
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
