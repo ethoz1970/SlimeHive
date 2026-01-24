@@ -79,7 +79,7 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <h2>/// HIVE MIND: RESEARCH TERMINAL ///</h2>
+    <h2>/// HIVE MIND: RESEARCH TERMINAL /// <span id="sun-status" style="float:right; font-size: 14px; color: #888;">SUN: SYNCING...</span></h2>
     <div class="container">
         <div class="panel">
             <div class="panel-header">Optical Sensor (Live Analysis)</div>
@@ -114,6 +114,20 @@ HTML_TEMPLATE = """
             try {
                 const response = await fetch('/data');
                 const data = await response.json();
+                
+                // Update Sun Status
+                const sunStatus = document.getElementById('sun-status');
+                if (data.mood === "FRENZY") {
+                    sunStatus.innerText = "SUN: DAY";
+                    sunStatus.style.color = "#ff0";
+                } else if (data.mood === "SLEEP") {
+                    sunStatus.innerText = "SUN: NIGHT";
+                    sunStatus.style.color = "#44f";
+                } else {
+                    sunStatus.innerText = "SUN: " + data.mood;
+                    sunStatus.style.color = "#888";
+                }
+
                 drawMap(data.grid);
                 drawDrones(data.drones);
             } catch (e) { }
@@ -134,17 +148,26 @@ HTML_TEMPLATE = """
             let activeCount = 0;
             
             for (const [id, drone] of Object.entries(drones)) {
-                if (now - drone.last_seen > 10) continue;
+                // Ghost Trails: Show everyone, but color code them
+                const diff = now - drone.last_seen;
+                let color = '#f00'; // > 30s
                 
-                activeCount++;
+                if (diff < 10) {
+                    color = '#0f0'; // Active
+                    activeCount++;
+                } else if (diff <= 30) {
+                    color = '#ff0'; // Warning
+                }
+                
                 const el = document.createElement('div');
                 el.className = 'drone-label';
                 el.style.left = (drone.x * scale + 10) + 'px';
                 el.style.top = ((gridSize - 1 - drone.y) * scale - 10) + 'px';
                 el.innerHTML = `[${id}]<br><span style="color:#888">${drone.rssi}dB</span>`;
+                el.style.color = color; // Label color
                 overlays.appendChild(el);
                 
-                ctx.strokeStyle = '#0f0';
+                ctx.strokeStyle = color; // Circle color
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
