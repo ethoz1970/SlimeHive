@@ -29,27 +29,44 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     """
     Triggered when the Pico sends a "Deposit" message.
-    Payload format expected: "x,y,intensity"
+    Payload format expected: "x,y,intensity" OR "x,y,intensity,rssi"
     """
     global hive_grid
     try:
         payload = msg.payload.decode('utf-8')
-        # Parse the CSV data
-        x, y, strength = map(int, payload.split(','))
+        data_parts = list(map(int, payload.split(',')))
         
-        # Apply to grid (Add scent to the location)
-        # We check bounds just in case the Pico sends a weird number
+        # Default values
+        rssi = -50  # Assume strong signal if not provided
+        
+        # Handle variable data length (Backwards compatibility)
+        if len(data_parts) == 3:
+            x, y, strength = data_parts
+        elif len(data_parts) == 4:
+            x, y, strength, rssi = data_parts
+        else:
+            print(f" ! FORMAT ERROR: {payload}")
+            return
+
+        # --- PHYSICS: SIGNAL QUALITY ---
+        # If the drone is far away (low RSSI), the "data integrity" drops.
+        # RSSI is usually -30 (close) to -90 (far).
+        # We will reduce the strength of the drop if the signal is weak.
+        if rssi < -80:
+            strength *= 0.5  # 50% penalty for bad signal
+            print(f" > GHOST DROP (Weak Signal {rssi}dB): +{strength} at [{x}, {y}]")
+        else:
+            print(f" > DROP: +{strength} at [{x}, {y}] (Signal {rssi}dB)")
+
+        # Apply to grid
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
             hive_grid[x, y] += strength
-            print(f" > DROP: +{strength} scent at [{x}, {y}]")
-        else:
-            print(f" ! OOB DROP: [{x}, {y}] ignored.")
             
     except ValueError:
         print(f" ! DATA ERROR: Could not parse '{msg.payload}'")
     except Exception as e:
         print(f" ! ERROR: {e}")
-
+        
 # --- SETUP CLIENT ---
 client = mqtt.Client()
 client.on_connect = on_connect
