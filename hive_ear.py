@@ -17,18 +17,19 @@ def detection_callback(device, advertisement_data):
             x, y, intensity = struct.unpack('<BBH', data)
             rssi = advertisement_data.rssi
             
-            # --- NEW: IDENTIFY THE DRONE ---
-            # device.address is the MAC address (e.g., AA:BB:CC:11:22:33)
-            # We take the last 5 chars to make a short name like "22:33"
+            # 1. Identify the Drone (Last 5 chars of MAC)
             drone_id = device.address[-5:]
             
+            # 2. Print to Terminal (So you know it's working)
             print(f"[{drone_id}] Pos: [{x},{y}] | Signal: {rssi}dBm")
             
-            # We send the ID to the brain too, just in case
-            client.publish("hive/deposit", f"{x},{y},{intensity},{rssi}")
+            # 3. SEND TO BRAIN (Crucial Fix: Include drone_id)
+            # Format: ID, X, Y, Intensity, RSSI
+            msg = f"{drone_id},{x},{y},{intensity},{rssi}"
+            client.publish("hive/deposit", msg)
 
 async def main():
-    print("--- HIVE EAR LISTENING (Swarm Mode) ---")
+    print("--- HIVE EAR LISTENING (Swarm ID Mode) ---")
     scanner = BleakScanner(detection_callback)
     await scanner.start()
     while True:
