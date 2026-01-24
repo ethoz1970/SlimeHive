@@ -8,7 +8,7 @@ from scipy.signal import convolve2d
 
 # --- HIVE CONFIGURATION ---
 GRID_SIZE = 50
-DECAY_RATE = 1.995  # How fast scent fades (Lower = faster fade)
+DECAY_RATE = 0.999  # How fast scent fades (Lower = faster fade)
 DIFFUSION_KERNEL = np.array([[0.05, 0.1, 0.05],
                              [0.1,  0.4, 0.1 ],
                              [0.05, 0.1, 0.05]])
@@ -66,7 +66,7 @@ def on_message(client, userdata, msg):
         print(f" ! DATA ERROR: Could not parse '{msg.payload}'")
     except Exception as e:
         print(f" ! ERROR: {e}")
-
+        
 # --- SETUP CLIENT ---
 client = mqtt.Client()
 client.on_connect = on_connect
