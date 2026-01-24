@@ -96,15 +96,16 @@ def physics_loop():
         hive_grid *= DECAY_RATE
         
         # 2. Prune Dead Drones (Heartbeat Check)
-        now = time.time()
-        dead_ids = []
-        for d_id, data in active_drones.items():
-            if now - data['last_seen'] > 5.0: # 5 seconds without signal = Dead
-                dead_ids.append(d_id)
-        
-        for d_id in dead_ids:
-            del active_drones[d_id]
-            # print(f"Lost contact with drone: {d_id}")
+        # DISABLED: check via Dashboard logic instead
+        # now = time.time()
+        # dead_ids = []
+        # for d_id, data in active_drones.items():
+        #     if now - data['last_seen'] > 5.0: # 5 seconds without signal = Dead
+        #         dead_ids.append(d_id)
+        # 
+        # for d_id in dead_ids:
+        #     del active_drones[d_id]
+        #     # print(f"Lost contact with drone: {d_id}")
 
         # 3. Save State for Dashboard (The "Mental Image")
         # We convert numpy array to standard list for JSON

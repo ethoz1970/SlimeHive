@@ -84,6 +84,8 @@ HTML_TEMPLATE = """
         <div class="panel">
             <div class="panel-header">Optical Sensor (Live Analysis)</div>
             <img class="feed" src="/video_feed">
+            <div class="panel-header" style="border-top: 1px solid #333; margin-top: 0;">Drone Registry</div>
+            <div id="drone-registry" style="padding: 10px; font-size: 12px; height: 150px; overflow-y: auto;"></div>
         </div>
         <div class="panel">
             <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
@@ -151,6 +153,31 @@ HTML_TEMPLATE = """
             
             droneCounter.innerText = activeCount;
             droneCounter.style.color = activeCount > 0 ? '#0f0' : '#f00';
+            updateDroneList(drones);
+        }
+
+        function updateDroneList(drones) {
+            const list = document.getElementById('drone-registry');
+            list.innerHTML = '';
+            const now = Date.now() / 1000;
+            
+            // Sort by ID for stability
+            const sortedIds = Object.keys(drones).sort();
+            
+            for (const id of sortedIds) {
+                const drone = drones[id];
+                const diff = now - drone.last_seen;
+                let color = '#f00'; // > 30s
+                
+                if (diff < 10) color = '#0f0'; // < 10s
+                else if (diff <= 30) color = '#ff0'; // 10-30s
+                
+                const item = document.createElement('div');
+                item.style.marginBottom = '4px';
+                item.style.color = color;
+                item.innerText = `> [${id}] RSSI:${drone.rssi}dB (${Math.round(diff)}s ago)`;
+                list.appendChild(item);
+            }
         }
         setInterval(fetchState, 100);
     </script>
