@@ -3,35 +3,32 @@ from bleak import BleakScanner
 import paho.mqtt.client as mqtt
 import struct
 
-# MQTT Setup
-client = mqtt.Client()
+# MQTT Setup (Updated for new API)
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, 60)
 client.loop_start()
 
 def detection_callback(device, advertisement_data):
-    """
-    Called every time the Bluetooth radio hears a shout.
-    """
-    # Filter: Only listen to our specific Manufacturer ID (0xFFFF)
+    # Filter for our Drone ID (0xFFFF)
     if 0xFFFF in advertisement_data.manufacturer_data:
         data = advertisement_data.manufacturer_data[0xFFFF]
         
-        if len(data) == 4: # We expect 4 bytes (x, y, intensity_low, intensity_high)
-            # Unpack the bytes back into numbers
+        if len(data) == 4:
             x, y, intensity = struct.unpack('<BBH', data)
             
-            # Print for debug
-            print(f"Heard Drone: [{x}, {y}] Int: {intensity}")
+            # --- NEW: GET PHYSICAL DISTANCE (RSSI) ---
+            rssi = device.rssi  # This is the signal strength (e.g., -55)
             
-            # Publish to the Brain (Brain doesn't know it's Bluetooth!)
-            client.publish("hive/deposit", f"{x},{y},{intensity}")
+            # Print it so we can see the physics in action
+            print(f"Drone at [{x},{y}] | Signal: {rssi}dBm")
+            
+            # We append the RSSI to the message so the Brain can use it
+            client.publish("hive/deposit", f"{x},{y},{intensity},{rssi}")
 
 async def main():
-    print("--- HIVE EAR LISTENING (Bluetooth) ---")
+    print("--- HIVE EAR LISTENING (With RSSI) ---")
     scanner = BleakScanner(detection_callback)
     await scanner.start()
-    
-    # Keep scanning forever
     while True:
         await asyncio.sleep(1)
 
