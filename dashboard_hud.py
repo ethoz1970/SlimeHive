@@ -127,6 +127,7 @@ HTML_TEMPLATE = """
                 // Else: Do nothing, keep previous state or default "SYNCING..."
 
                 drawMap(data.grid);
+                drawQueen();
                 drawDrones(data.drones);
             } catch (e) { }
         }
@@ -138,6 +139,29 @@ HTML_TEMPLATE = """
                     ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
                 }
             }
+        }
+
+        function drawQueen() {
+            // The Queen sits at the center
+            const x = gridSize / 2;
+            const y = gridSize / 2;
+            const px = x * scale;
+            const py = (gridSize - 1 - y) * scale;
+
+            // Draw Icon (Diamond)
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.moveTo(px, py - 8);
+            ctx.lineTo(px + 8, py);
+            ctx.lineTo(px, py + 8);
+            ctx.lineTo(px - 8, py);
+            ctx.closePath();
+            ctx.fill();
+
+            // Overlay Label
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 10px monospace';
+            ctx.fillText("Q", px - 3.5, py + 3.5);
         }
 
         function drawDrones(drones) {
