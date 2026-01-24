@@ -17,7 +17,7 @@ def detection_callback(device, advertisement_data):
             x, y, intensity = struct.unpack('<BBH', data)
             
             # --- NEW: GET PHYSICAL DISTANCE (RSSI) ---
-            rssi = device.rssi  # This is the signal strength (e.g., -55)
+            rssi = advertisment_data.rssi  # This is the signal strength (e.g., -55)
             
             # Print it so we can see the physics in action
             print(f"Drone at [{x},{y}] | Signal: {rssi}dBm")
