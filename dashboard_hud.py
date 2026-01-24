@@ -2,37 +2,47 @@ from flask import Flask, render_template_string, Response
 import json
 import time
 import io
-import threading
-
-# Import camera library safely (so code runs even if camera fails)
-try:
-    import picamera
-    CAMERA_AVAILABLE = True
-except ImportError:
-    CAMERA_AVAILABLE = False
-    print("Camera library not found. Running in Telemetry-Only mode.")
+import subprocess
+import paho.mqtt.client as mqtt
 
 app = Flask(__name__)
 
+# --- CONFIGURATION ---
+# We use the system command 'rpicam-still' to grab frames.
+# This works on the new OS where the Python library fails.
+def get_camera_command():
+    return [
+        "rpicam-still", 
+        "--width", "640", 
+        "--height", "480", 
+        "--encoding", "jpg", 
+        "--output", "-",      # Output to standard out (memory)
+        "--timeout", "1",     # Instant capture
+        "--nopreview"         # Don't show on HDMI
+    ]
+
 # --- OPTICAL SENSOR STREAM ---
 def gen_frames():
-    if not CAMERA_AVAILABLE:
-        return
-
-    # We use low resolution (640x480) to keep the single-core CPU free 
-    # for handling the MQTT swarm data.
-    with picamera.PiCamera() as camera:
-        camera.resolution = (640, 480)
-        camera.framerate = 24
-        time.sleep(2) # Warmup
-        
-        stream = io.BytesIO()
-        for _ in camera.capture_continuous(stream, 'jpeg', use_video_port=True):
-            stream.seek(0)
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + stream.read() + b'\r\n')
-            stream.seek(0)
-            stream.truncate()
+    while True:
+        try:
+            # 1. Ask the OS for a photo
+            # This is safer than the Python library on the Pi Zero
+            result = subprocess.run(
+                get_camera_command(), 
+                capture_output=True
+            )
+            
+            # 2. If we got data, send it to the browser
+            if result.stdout:
+                frame = result.stdout
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            
+            # Throttle to save CPU (Pi Zero is single core!)
+            time.sleep(0.2)
+            
+        except Exception as e:
+            time.sleep(1)
 
 # --- HUD INTERFACE ---
 HTML_TEMPLATE = """
@@ -48,54 +58,22 @@ HTML_TEMPLATE = """
             overflow: hidden;
         }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
-        
-        /* SPLIT SCREEN LAYOUT */
-        .container {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            height: 90vh;
-        }
-
-        .panel {
-            border: 1px solid #333;
-            background: #050505;
-            position: relative;
-        }
-        .panel-header {
-            background: #111;
-            color: #aaa;
-            padding: 5px 10px;
-            font-size: 12px;
-            border-bottom: 1px solid #333;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; height: 90vh; }
+        .panel { border: 1px solid #333; background: #050505; position: relative; }
+        .panel-header { background: #111; color: #aaa; padding: 5px; font-size: 12px; border-bottom: 1px solid #333; }
         img.feed { width: 100%; height: auto; display: block; opacity: 0.9; }
-
-        /* RADAR VISUALIZATION */
-        #map-container { 
-            position: relative; 
-            width: 100%; height: 100%; 
-            display: flex; justify-content: center; align-items: center; 
-        }
+        #map-container { position: relative; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
         canvas { border: 1px solid #222; }
-        .drone-label { 
-            position: absolute; color: white; font-weight: bold; font-size: 10px; 
-            text-shadow: 0 0 2px #000; pointer-events: none;
-        }
+        .drone-label { position: absolute; color: white; font-weight: bold; font-size: 10px; text-shadow: 0 0 2px #000; pointer-events: none; }
     </style>
 </head>
 <body>
     <h2>/// HIVE MIND: RESEARCH TERMINAL ///</h2>
-    
     <div class="container">
         <div class="panel">
-            <div class="panel-header">Optical Sensor (Live)</div>
+            <div class="panel-header">Optical Sensor (System Stream)</div>
             <img class="feed" src="/video_feed">
         </div>
-
         <div class="panel">
             <div class="panel-header">Swarm Telemetry</div>
             <div id="map-container">
@@ -104,7 +82,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
     <script>
         const canvas = document.getElementById('hiveMap');
         const ctx = canvas.getContext('2d');
@@ -113,7 +90,6 @@ HTML_TEMPLATE = """
         const scale = 500 / gridSize; 
 
         function getColor(value) {
-            // Heatmap: Black -> Red -> White (Research Standard)
             if (value < 5) return `rgb(0,0,0)`;
             if (value < 50) return `rgb(${value*5}, 0, 0)`; 
             if (value < 150) return `rgb(255, ${value}, 0)`; 
@@ -143,19 +119,13 @@ HTML_TEMPLATE = """
             const now = Date.now() / 1000;
             for (const [id, drone] of Object.entries(drones)) {
                 if (now - drone.last_seen > 10) continue;
-                
                 const el = document.createElement('div');
                 el.className = 'drone-label';
-                
-                const screenX = drone.x * scale + 10; 
-                const screenY = (gridSize - 1 - drone.y) * scale - 10;
-                
-                el.style.left = screenX + 'px';
-                el.style.top = screenY + 'px';
+                el.style.left = (drone.x * scale + 10) + 'px';
+                el.style.top = ((gridSize - 1 - drone.y) * scale - 10) + 'px';
                 el.innerHTML = `[${id}]<br><span style="color:#888">${drone.rssi}dB</span>`;
                 overlays.appendChild(el);
                 
-                // Target Reticle
                 ctx.strokeStyle = '#0f0';
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -175,10 +145,7 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    if CAMERA_AVAILABLE:
-        return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-    else:
-        return "Optical Sensor Offline"
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/data')
 def data():
