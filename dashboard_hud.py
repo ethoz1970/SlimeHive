@@ -86,7 +86,7 @@ HTML_TEMPLATE = """
             <img class="feed" src="/video_feed">
         </div>
         <div class="panel">
-            <div class="panel-header">Swarm Telemetry</div>
+            <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
             <div id="map-container">
                 <canvas id="hiveMap" width="500" height="500"></canvas>
                 <div id="overlays"></div>
@@ -97,6 +97,7 @@ HTML_TEMPLATE = """
         const canvas = document.getElementById('hiveMap');
         const ctx = canvas.getContext('2d');
         const overlays = document.getElementById('overlays');
+        const droneCounter = document.getElementById('drone-counter');
         const gridSize = 50;
         const scale = 500 / gridSize; 
 
@@ -128,8 +129,12 @@ HTML_TEMPLATE = """
         function drawDrones(drones) {
             overlays.innerHTML = ''; 
             const now = Date.now() / 1000;
+            let activeCount = 0;
+            
             for (const [id, drone] of Object.entries(drones)) {
                 if (now - drone.last_seen > 10) continue;
+                
+                activeCount++;
                 const el = document.createElement('div');
                 el.className = 'drone-label';
                 el.style.left = (drone.x * scale + 10) + 'px';
@@ -143,6 +148,9 @@ HTML_TEMPLATE = """
                 ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
                 ctx.stroke();
             }
+            
+            droneCounter.innerText = activeCount;
+            droneCounter.style.color = activeCount > 0 ? '#0f0' : '#f00';
         }
         setInterval(fetchState, 100);
     </script>
