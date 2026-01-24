@@ -123,10 +123,8 @@ HTML_TEMPLATE = """
                 } else if (data.mood === "SLEEP") {
                     sunStatus.innerText = "SUN: NIGHT";
                     sunStatus.style.color = "#44f";
-                } else {
-                    sunStatus.innerText = "SUN: " + data.mood;
-                    sunStatus.style.color = "#888";
-                }
+                } 
+                // Else: Do nothing, keep previous state or default "SYNCING..."
 
                 drawMap(data.grid);
                 drawDrones(data.drones);
@@ -172,6 +170,19 @@ HTML_TEMPLATE = """
                 ctx.beginPath();
                 ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
                 ctx.stroke();
+
+                // Draw Trail
+                if (drone.trail && drone.trail.length > 1) {
+                    ctx.beginPath();
+                    ctx.strokeStyle = color; 
+                    ctx.globalAlpha = 0.4; // Faint trail
+                    ctx.moveTo(drone.trail[0][0] * scale + scale/2, (gridSize - 1 - drone.trail[0][1]) * scale + scale/2);
+                    for (let i = 1; i < drone.trail.length; i++) {
+                        ctx.lineTo(drone.trail[i][0] * scale + scale/2, (gridSize - 1 - drone.trail[i][1]) * scale + scale/2);
+                    }
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0; // Reset opacity
+                }
             }
             
             droneCounter.innerText = activeCount;

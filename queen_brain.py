@@ -66,11 +66,21 @@ def on_message(client, userdata, msg):
             rssi = int(parts[4])
 
             # A. Update Drone Registry (Where are they NOW?)
+            # Retrieve existing trail or start new
+            current_trail = []
+            if drone_id in active_drones:
+                current_trail = active_drones[drone_id].get("trail", [])
+            
+            current_trail.append([x, y])
+            if len(current_trail) > 10: 
+                current_trail.pop(0)
+
             active_drones[drone_id] = {
                 "x": x, 
                 "y": y, 
                 "rssi": rssi,
-                "last_seen": time.time()
+                "last_seen": time.time(),
+                "trail": current_trail
             }
 
             # B. Deposit Pheromones (Update the Map)
