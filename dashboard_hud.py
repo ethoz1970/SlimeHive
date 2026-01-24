@@ -4,47 +4,58 @@ import time
 import io
 import subprocess
 import paho.mqtt.client as mqtt
+from PIL import Image  # The new eye
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
-# We use the system command 'rpicam-still' to grab frames.
-# This works on the new OS where the Python library fails.
+MQTT_BROKER = "localhost"
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+try:
+    client.connect(MQTT_BROKER, 1883, 60)
+    client.loop_start()
+except:
+    print("Warning: Brain not found (MQTT Disconnected)")
+
 def get_camera_command():
     return [
-        "rpicam-still", 
-        "--width", "640", 
-        "--height", "480", 
-        "--encoding", "jpg", 
-        "--output", "-",      # Output to standard out (memory)
-        "--timeout", "1",     # Instant capture
-        "--nopreview"         # Don't show on HDMI
+        "rpicam-still", "--width", "320", "--height", "240", # Lower res for speed
+        "--encoding", "jpg", "--output", "-", "--timeout", "1", "--nopreview"
     ]
 
-# --- OPTICAL SENSOR STREAM ---
 def gen_frames():
     while True:
         try:
-            # 1. Ask the OS for a photo
-            # This is safer than the Python library on the Pi Zero
-            result = subprocess.run(
-                get_camera_command(), 
-                capture_output=True
-            )
+            # 1. Capture Frame
+            result = subprocess.run(get_camera_command(), capture_output=True)
             
-            # 2. If we got data, send it to the browser
             if result.stdout:
-                frame = result.stdout
+                img_data = result.stdout
+                
+                # --- OPTICAL CORTEX ANALYSIS ---
+                # Check brightness without melting the CPU
+                try:
+                    image = Image.open(io.BytesIO(img_data))
+                    # Resize to 1x1 pixel to get average brightness instantly
+                    avg_color = image.resize((1, 1)).getpixel((0, 0))
+                    # Handle grayscale (int) or RGB (tuple)
+                    brightness = avg_color if isinstance(avg_color, int) else sum(avg_color) / 3
+                    
+                    # Publish to Hive Mind
+                    client.publish("hive/environment", int(brightness))
+                except:
+                    pass
+                # -------------------------------
+
                 yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n\r\n' + img_data + b'\r\n')
             
-            # Throttle to save CPU (Pi Zero is single core!)
-            time.sleep(0.2)
+            time.sleep(0.1) # Observation frequency
             
         except Exception as e:
             time.sleep(1)
 
-# --- HUD INTERFACE ---
+# --- (Keep your existing HTML Template below this line) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -71,7 +82,7 @@ HTML_TEMPLATE = """
     <h2>/// HIVE MIND: RESEARCH TERMINAL ///</h2>
     <div class="container">
         <div class="panel">
-            <div class="panel-header">Optical Sensor (System Stream)</div>
+            <div class="panel-header">Optical Sensor (Live Analysis)</div>
             <img class="feed" src="/video_feed">
         </div>
         <div class="panel">
