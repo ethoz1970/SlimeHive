@@ -84,6 +84,12 @@ HTML_TEMPLATE = """
 <body>
     <h2>
         /// HIVE MIND: RESEARCH TERMINAL /// 
+        <span style="float:right; font-size: 14px; margin-left: 10px;">
+            <select id="mode-select" onchange="setMode()" style="background:#000; color:#f0f; border:1px solid #333; font-family:monospace; padding:2px;">
+                <option value="RANDOM">RANDOM WALK</option>
+                <option value="RSSI">RSSI TRIANGULATION</option>
+            </select>
+        </span>
         <span style="float:right; font-size: 14px; margin-left: 20px;">
             <select id="time-filter" style="background:#000; color:#0f0; border:1px solid #333; font-family:monospace; padding:2px;">
                 <option value="live">LIVE (10s)</option>
@@ -165,6 +171,11 @@ HTML_TEMPLATE = """
                 sunStatus.innerText = "SUN: NIGHT";
                 sunStatus.style.color = "#44f";
             }
+        }
+
+        async function setMode() {
+            const mode = document.getElementById('mode-select').value;
+            await fetch(`/set_mode?mode=${mode}`);
         }
 
         async function fetchHistory(window) {
@@ -379,6 +390,12 @@ def history_data():
     except Exception as e:
         print(f"History Error: {e}")
         return {}
+
+@app.route('/set_mode')
+def set_mode():
+    mode = request.args.get('mode', 'RANDOM')
+    client.publish("hive/control/mode", mode)
+    return "OK"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

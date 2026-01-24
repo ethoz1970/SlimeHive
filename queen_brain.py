@@ -11,17 +11,19 @@ HISTORY_FILE = "hive_state.json"
 
 # --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
-# 0.99 = Lasts forever (Long term memory)
-# 0.50 = Vanishes instantly (Short term memory)
 DECAY_RATE = 0.95  # Default to "Active/Day"
 CURRENT_MOOD = "WAITING"
+POSITION_MODE = "RANDOM" # Options: "RANDOM", "RSSI"
 
 # --- STATE VARIABLES ---
 # The Pheromone Grid (Float 0.0 - 255.0)
 hive_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
 
-# Drone Registry: { "ID": {x, y, last_seen, rssi} }
+# Drone Registry: { "ID": {x, y, last_seen, rssi, trail} }
 active_drones = {}
+
+# RSSI Buffer for Triangulation: { "ID": { "QUEEN": -50, "SENTINEL": -80, "last_update": t } }
+rssi_buffer = {}
 
 # --- MQTT CALLBACKS ---
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -29,67 +31,140 @@ def on_connect(client, userdata, flags, rc, properties=None):
     # Subscribe to Drone Data AND Environmental Data
     client.subscribe("hive/deposit")
     client.subscribe("hive/environment")
+    client.subscribe("hive/control/mode")
+
+def calculate_distance(rssi):
+    # Rough approximation: -50dB = 1m, -6dB per doubling distance
+    # Let's map RSSI (-30 to -90) to Grid Units (0 to 50)
+    # -30 -> 1 unit
+    # -90 -> 40 units
+    dist = (abs(rssi) - 30) * 0.8
+    if dist < 1: dist = 1
+    return dist
+
+def triangulation(d1, d2):
+    # P1 (Queen) at (25, 25)
+    # P2 (Sentinel) at (10, 10)
+    p1 = np.array([25, 25])
+    p2 = np.array([10, 10])
+    
+    # Distance between sensors
+    d_sensors = np.linalg.norm(p1 - p2) # approx 21.2
+    
+    # 2D Trilateration logic (Simplified intersection of spheres)
+    # x = (r1^2 - r2^2 + d^2) / (2d)
+    # This finds the point along the line connecting P1-P2
+    a = (d1**2 - d2**2 + d_sensors**2) / (2 * d_sensors)
+    
+    # Height h = sqrt(r1^2 - a^2)
+    # If circles don't touch, just take the closest point
+    term = d1**2 - a**2
+    h = 0
+    if term > 0:
+        h = np.sqrt(term)
+        
+    # P2 relative to P1
+    p2_p1 = p2 - p1
+    
+    # Point P3 (intersection center)
+    x3 = p1[0] + a * (p2_p1[0] / d_sensors)
+    y3 = p1[1] + a * (p2_p1[1] / d_sensors)
+    
+    # We pick one of the two intersections (ignoring h usually keeps us on the line, which is boring)
+    # But for a demo, let's just return P3 to check logic, effective result is "Between" them
+    # To be fancy, we add +h or -h. Let's add +h to X for bias.
+    
+    fx = x3 + h * (p2_p1[1] / d_sensors)
+    fy = y3 - h * (p2_p1[0] / d_sensors)
+    
+    return int(fx), int(fy)
 
 def on_message(client, userdata, msg):
-    global hive_grid, active_drones, DECAY_RATE, CURRENT_MOOD
+    global hive_grid, active_drones, DECAY_RATE, CURRENT_MOOD, POSITION_MODE, rssi_buffer
     
     try:
+        # --- 0. CONTROL INPUT ---
+        if msg.topic == "hive/control/mode":
+            mode = msg.payload.decode().upper()
+            if mode in ["RANDOM", "RSSI"]:
+                POSITION_MODE = mode
+                print(f"/// SWITCHING NAVIGATION TO: {POSITION_MODE} ///")
+            return
+
         # --- 1. SENSORY INPUT: VISUAL (ENVIRONMENT) ---
         if msg.topic == "hive/environment":
             brightness = int(msg.payload.decode())
-            
-            # CIRCADIAN RHYTHM LOGIC
-            # If the room is bright, the hive is "Awake" (High Memory)
-            # If the room is dark, the hive is "Asleep" (Low Memory)
             if brightness > 60:
                 DECAY_RATE = 0.95
                 if CURRENT_MOOD != "FRENZY":
-                    print(f"/// SUNRISE DETECTED ({brightness}) -> ENTERING FRENZY MODE ///")
+                    print(f"/// SUNRISE ({brightness}) -> FRENZY ///")
                     CURRENT_MOOD = "FRENZY"
             else:
                 DECAY_RATE = 0.60
                 if CURRENT_MOOD != "SLEEP":
-                    print(f"/// SUNSET DETECTED ({brightness}) -> ENTERING SLEEP MODE ///")
+                    print(f"/// SUNSET ({brightness}) -> SLEEP ///")
                     CURRENT_MOOD = "SLEEP"
             return
 
         # --- 2. SENSORY INPUT: TACTILE (DRONE MOVEMENT) ---
         if msg.topic == "hive/deposit":
-            # Format: ID, X, Y, INTENSITY, RSSI
+            # Format: EAR_ID, ID, X, Y, INT, RSSI
             payload = msg.payload.decode('utf-8')
             parts = payload.split(',')
             
-            drone_id = parts[0]
-            x = int(parts[1])
-            y = int(parts[2])
-            intensity = int(parts[3])
-            rssi = int(parts[4])
+            # Default values if legacy format
+            ear_id = "UNKNOWN"
+            if len(parts) == 6:
+                ear_id = parts[0]
+                drone_id = parts[1]
+                x = int(parts[2])
+                y = int(parts[3])
+                intensity = int(parts[4])
+                rssi = int(parts[5])
+            elif len(parts) == 5:
+                drone_id = parts[0]
+                x = int(parts[1])
+                y = int(parts[2])
+                intensity = int(parts[3])
+                rssi = int(parts[4])
+            else:
+                return
+
+            # Update RSSI Buffer
+            if drone_id not in rssi_buffer: rssi_buffer[drone_id] = {}
+            rssi_buffer[drone_id][ear_id] = rssi
+            rssi_buffer[drone_id]["last_update"] = time.time()
+
+            # --- CALCULATE POSITION ---
+            if POSITION_MODE == "RSSI" and "QUEEN" in rssi_buffer[drone_id] and "SENTINEL" in rssi_buffer[drone_id]:
+                # Triangulate
+                d_q = calculate_distance(rssi_buffer[drone_id]["QUEEN"])
+                d_s = calculate_distance(rssi_buffer[drone_id]["SENTINEL"])
+                
+                # Check latency (if data is stale > 2s, ignore)
+                if time.time() - rssi_buffer[drone_id]["last_update"] < 2.0:
+                    tx, ty = triangulation(d_q, d_s)
+                    # Bounds check
+                    x = max(0, min(GRID_SIZE-1, tx))
+                    y = max(0, min(GRID_SIZE-1, ty))
 
             # A. Update Drone Registry (Where are they NOW?)
-            # Retrieve existing trail or start new
-            current_trail = []
-            if drone_id in active_drones:
-                current_trail = active_drones[drone_id].get("trail", [])
-            
-            current_trail.append([x, y])
-            if len(current_trail) > 10: 
-                current_trail.pop(0)
-
             active_drones[drone_id] = {
                 "x": x, 
                 "y": y, 
                 "rssi": rssi,
                 "last_seen": time.time(),
-                "trail": current_trail
+                "trail": active_drones.get(drone_id, {}).get("trail", [])
             }
+            # Add to trail (Moved logic here to deduplicate)
+            active_drones[drone_id]["trail"].append([x, y])
+            if len(active_drones[drone_id]["trail"]) > 10:
+                active_drones[drone_id]["trail"].pop(0)
 
             # B. Deposit Pheromones (Update the Map)
-            # Add intensity to the current spot
             if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
                 hive_grid[x][y] += (intensity / 10.0) 
-                # Cap at 255
-                if hive_grid[x][y] > 255: 
-                    hive_grid[x][y] = 255
+                if hive_grid[x][y] > 255: hive_grid[x][y] = 255
 
     except Exception as e:
         print(f"Sensory Error: {e}")

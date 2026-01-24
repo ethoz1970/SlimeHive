@@ -4,6 +4,7 @@ import paho.mqtt.client as mqtt
 import struct
 
 # MQTT Setup
+EAR_ID = "QUEEN" # CHANGE THIS TO 'SENTINEL' ON THE SECOND PI
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, 60)
 client.loop_start()
@@ -21,11 +22,11 @@ def detection_callback(device, advertisement_data):
             drone_id = device.address[-5:]
             
             # 2. Print to Terminal (So you know it's working)
-            print(f"[{drone_id}] Pos: [{x},{y}] | Signal: {rssi}dBm")
+            print(f"[{EAR_ID} heard {drone_id}] Pos: [{x},{y}] | Signal: {rssi}dBm")
             
             # 3. SEND TO BRAIN (Crucial Fix: Include drone_id)
-            # Format: ID, X, Y, Intensity, RSSI
-            msg = f"{drone_id},{x},{y},{intensity},{rssi}"
+            # Format: EAR_ID, ID, X, Y, Intensity, RSSI
+            msg = f"{EAR_ID},{drone_id},{x},{y},{intensity},{rssi}"
             client.publish("hive/deposit", msg)
 
 async def main():

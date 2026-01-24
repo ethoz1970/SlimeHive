@@ -15,7 +15,7 @@ filename = f"{LOG_DIR}/session_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv"
 # Initialize CSV
 with open(filename, "w", newline='') as f:
     writer = csv.writer(f)
-    writer.writerow(["timestamp", "drone_id", "x", "y", "intensity", "rssi"])
+    writer.writerow(["timestamp", "ear_id", "drone_id", "x", "y", "intensity", "rssi"])
 
 print(f"--- SCRIBE ONLINE ---")
 print(f"Recording to: {filename}")
@@ -27,15 +27,22 @@ def on_message(client, userdata, msg):
         parts = payload.split(',')
         
         # Ensure we have clean data
-        if len(parts) == 5:
+        row_data = []
+        if len(parts) == 6:
+            # New Format: EAR_ID, ID, X, Y, INT, RSSI
+            row_data = parts
+        elif len(parts) == 5:
+            # Old Format: ID, X, Y, INT, RSSI
+            row_data = ["UNKNOWN"] + parts
+        
+        if row_data:
             # Add a precise timestamp (when we received it)
             timestamp = time.time()
             
             # Append to file immediately (flush so we don't lose data if power cuts)
             with open(filename, "a", newline='') as f:
                 writer = csv.writer(f)
-                # Row: [170604123.45, "28:AB", 10, 20, 50, -45]
-                writer.writerow([timestamp] + parts)
+                writer.writerow([timestamp] + row_data)
                 
             # Print a dot to show activity without spamming
             print(".", end="", flush=True)
