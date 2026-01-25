@@ -280,8 +280,8 @@ def physics_loop():
                 
                 # Normalize (Sign) + Random Noise
                 # We want a chance to move closer
-                dx = np.sign(vx) if abs(vx) > 0 else 0
-                dy = np.sign(vy) if abs(vy) > 0 else 0
+                dx = int(np.sign(vx)) if abs(vx) > 0 else 0
+                dy = int(np.sign(vy)) if abs(vy) > 0 else 0
                 
                 # Add randomness so they don't form a conga line
                 if random.random() < 0.3:
@@ -293,8 +293,8 @@ def physics_loop():
                 dx = random.choice([-1, 0, 1])
                 dy = random.choice([-1, 0, 1])
             
-            new_x = max(0, min(GRID_SIZE-1, drone["x"] + dx))
-            new_y = max(0, min(GRID_SIZE-1, drone["y"] + dy))
+            new_x = int(max(0, min(GRID_SIZE-1, drone["x"] + dx)))
+            new_y = int(max(0, min(GRID_SIZE-1, drone["y"] + dy)))
             
             # Update Position
             drone["x"] = new_x
