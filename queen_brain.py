@@ -16,10 +16,11 @@ SENSOR_POSITIONS = {
 VIRTUAL_PREFIX = "V-"
 
 # --- BIOLOGICAL PARAMETERS ---
+# --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
 DECAY_RATE = 0.95  # Default to "Active/Day"
 CURRENT_MOOD = "WAITING"
-POSITION_MODE = "RSSI" # Options: "RANDOM", "RSSI"
+SIMULATION_MODE = "RANDOM" # Options: "RANDOM", "FIND_QUEEN"
 
 # --- STATE VARIABLES ---
 # The Pheromone Grid (Float 0.0 - 255.0)
@@ -31,7 +32,7 @@ ghost_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
 # Drone Registry: { "ID": {x, y, last_seen, rssi, trail} }
 active_drones = {}
 
-# RSSI Buffer for Triangulation: { "ID": { "QUEEN": -50, "SENTINEL": -80, "last_update": t } }
+# RSSI Buffer for Triangulation: { "ID": { "QUEEN": [-50, -51], "SENTINEL": [-80], "last_update": t } }
 rssi_buffer = {}
 
 # --- MQTT CALLBACKS ---
@@ -135,15 +136,14 @@ def calculate_gravity_position(drone_id):
     return None
 
 def on_message(client, userdata, msg):
-    global hive_grid, active_drones, DECAY_RATE, CURRENT_MOOD, POSITION_MODE, rssi_buffer
+    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD, SIMULATION_MODE, rssi_buffer
     
     try:
         # --- 0. CONTROL INPUT ---
         if msg.topic == "hive/control/mode":
             mode = msg.payload.decode().upper()
-            if mode in ["RANDOM", "RSSI"]:
-                POSITION_MODE = mode
-                print(f"/// SWITCHING NAVIGATION TO: {POSITION_MODE} ///")
+            SIMULATION_MODE = mode
+            print(f"/// SWITCHING SIMULATION TO: {SIMULATION_MODE} ///")
             return
             
         if msg.topic == "hive/control/virtual_swarm":
@@ -215,16 +215,15 @@ def on_message(client, userdata, msg):
                 
             rssi_buffer[drone_id]["last_update"] = time.time()
 
-            # --- CALCULATE POSITION (GRAVITY MODEL) ---
-            if POSITION_MODE == "RSSI":
-                # Only apply physics if we have recent data
-                if time.time() - rssi_buffer[drone_id]["last_update"] < 2.0:
-                    pos = calculate_gravity_position(drone_id)
-                    if pos:
-                        tx, ty = pos
-                        # Bounds check
-                        x = max(0, min(GRID_SIZE-1, tx))
-                        y = max(0, min(GRID_SIZE-1, ty))
+            # --- CALCULATE POSITION (ALWAYS ACTIVE FOR REAL DRONES) ---
+            # Only apply physics if we have recent data
+            if time.time() - rssi_buffer[drone_id]["last_update"] < 2.0:
+                pos = calculate_gravity_position(drone_id)
+                if pos:
+                    tx, ty = pos
+                    # Bounds check
+                    x = max(0, min(GRID_SIZE-1, tx))
+                    y = max(0, min(GRID_SIZE-1, ty))
 
             # A. Update Drone Registry (Where are they NOW?)
             active_drones[drone_id] = {
@@ -254,7 +253,7 @@ def on_message(client, userdata, msg):
 
 # --- PHYSICS ENGINE (Thread) ---
 def physics_loop():
-    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD
+    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD, SIMULATION_MODE
     
     print("/// PHYSICS ENGINE STARTED ///")
     
@@ -268,9 +267,31 @@ def physics_loop():
         for v_id in virtual_ids:
             drone = active_drones[v_id]
             
-            # Random Walk Logic
-            dx = random.choice([-1, 0, 1])
-            dy = random.choice([-1, 0, 1])
+            dx, dy = 0, 0
+            
+            # --- BEHAVIOR TREE ---
+            if SIMULATION_MODE == "FIND_QUEEN":
+                # Move towards (25, 25)
+                target_x, target_y = 25, 25
+                
+                # Vector to target
+                vx = target_x - drone["x"]
+                vy = target_y - drone["y"]
+                
+                # Normalize (Sign) + Random Noise
+                # We want a chance to move closer
+                dx = np.sign(vx) if abs(vx) > 0 else 0
+                dy = np.sign(vy) if abs(vy) > 0 else 0
+                
+                # Add randomness so they don't form a conga line
+                if random.random() < 0.3:
+                    dx = random.choice([-1, 0, 1])
+                if random.random() < 0.3:
+                    dy = random.choice([-1, 0, 1])
+                    
+            else: # RANDOM (Default)
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
             
             new_x = max(0, min(GRID_SIZE-1, drone["x"] + dx))
             new_y = max(0, min(GRID_SIZE-1, drone["y"] + dy))
@@ -299,7 +320,8 @@ def physics_loop():
             "ghost_grid": ghost_grid.tolist(),
             "drones": active_drones,
             "mood": CURRENT_MOOD,
-            "decay_rate": DECAY_RATE
+            "decay_rate": DECAY_RATE,
+            "sim_mode": SIMULATION_MODE
         }
         
         try:

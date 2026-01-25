@@ -85,9 +85,10 @@ HTML_TEMPLATE = """
     <h2>
         /// HIVE MIND: RESEARCH TERMINAL /// 
         <span style="float:right; font-size: 14px; margin-left: 10px;">
+            <span style="color:#aaa;">SIMULATION:</span>
             <select id="mode-select" onchange="setMode()" style="background:#000; color:#f0f; border:1px solid #333; font-family:monospace; padding:2px;">
-                <option value="RANDOM">RANDOM WALK</option>
-                <option value="RSSI" selected>RSSI TRIANGULATION</option>
+                <option value="RANDOM" selected>RANDOM WALK</option>
+                <option value="FIND_QUEEN">FIND THE QUEEN</option>
             </select>
         </span>
         <span style="float:right; font-size: 14px; margin-left: 10px;">
