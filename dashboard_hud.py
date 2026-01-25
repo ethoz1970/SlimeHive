@@ -87,8 +87,13 @@ HTML_TEMPLATE = """
         <span style="float:right; font-size: 14px; margin-left: 10px;">
             <select id="mode-select" onchange="setMode()" style="background:#000; color:#f0f; border:1px solid #333; font-family:monospace; padding:2px;">
                 <option value="RANDOM">RANDOM WALK</option>
-                <option value="RSSI">RSSI TRIANGULATION</option>
+                <option value="RSSI" selected>RSSI TRIANGULATION</option>
             </select>
+        </span>
+        <span style="float:right; font-size: 14px; margin-left: 10px;">
+            <span style="color:#aaa;">V-DRONES:</span>
+            <input type="number" id="v-count" value="0" min="0" max="50" style="width:40px; background:#000; color:#fff; border:1px solid #333;">
+            <button onclick="setVirtualSwarm()" style="background:#222; color:#fff; border:1px solid #333; cursor:pointer;">SET</button>
         </span>
         <span style="float:right; font-size: 14px; margin-left: 20px;">
             <select id="time-filter" style="background:#000; color:#0f0; border:1px solid #333; font-family:monospace; padding:2px;">
@@ -145,7 +150,7 @@ HTML_TEMPLATE = """
                 updateSunStatus(data.mood);
                 
                 // 2. Decide what to draw
-                drawMap(data.grid);
+                drawMap(data.grid, data.ghost_grid);
                 drawQueen();
                 drawSentinel();
                 
@@ -178,6 +183,11 @@ HTML_TEMPLATE = """
             await fetch(`/set_mode?mode=${mode}`);
         }
 
+        async function setVirtualSwarm() {
+            const count = document.getElementById('v-count').value;
+            await fetch(`/set_virtual_swarm?count=${count}`);
+        }
+
         async function fetchHistory(window) {
              try {
                 const res = await fetch(`/history_data?window=${window}`);
@@ -205,12 +215,30 @@ HTML_TEMPLATE = """
             }
         }
 
-        function drawMap(grid) {
+        function drawMap(grid, ghost_grid) {
             if (!grid || grid.length < gridSize) return;
+            // Ghost grid might be undefined initially if old brain running
+            const hasGhost = ghost_grid && ghost_grid.length === gridSize;
+
             for (let x = 0; x < gridSize; x++) {
                 for (let y = 0; y < gridSize; y++) {
-                    ctx.fillStyle = getColor(grid[x][y]);
-                    ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                    const active = grid[x][y];
+                    
+                    if (active > 5) {
+                        ctx.fillStyle = getColor(active);
+                        ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                    } else if (hasGhost) {
+                        const ghost = ghost_grid[x][y];
+                        if (ghost > 10) {
+                            // Render Ghost Memory (White/Grey Fog)
+                            const g = Math.min(255, Math.floor(ghost));
+                            // Use low opacity white for a "fog" effect
+                            ctx.fillStyle = `rgba(255, 255, 255, ${g/800})`; 
+                            // Or simple Solid Grey if opacity is tricky on black
+                            // ctx.fillStyle = `rgb(${Math.floor(g/3)}, ${Math.floor(g/3)}, ${Math.floor(g/3)})`;
+                            ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                        }
+                    }
                 }
             }
         }
@@ -396,6 +424,12 @@ def history_data():
 def set_mode():
     mode = request.args.get('mode', 'RANDOM')
     client.publish("hive/control/mode", mode)
+    return "OK"
+
+@app.route('/set_virtual_swarm')
+def set_virtual_swarm():
+    count = request.args.get('count', '0')
+    client.publish("hive/control/virtual_swarm", count)
     return "OK"
 
 if __name__ == '__main__':

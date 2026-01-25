@@ -3,6 +3,7 @@ import numpy as np
 import json
 import time
 import threading
+import random
 
 # --- CONFIGURATION ---
 GRID_SIZE = 50
@@ -12,16 +13,20 @@ SENSOR_POSITIONS = {
     "QUEEN": (25, 25),
     "SENTINEL": (10, 10)
 }
+VIRTUAL_PREFIX = "V-"
 
 # --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
 DECAY_RATE = 0.95  # Default to "Active/Day"
 CURRENT_MOOD = "WAITING"
-POSITION_MODE = "RANDOM" # Options: "RANDOM", "RSSI"
+POSITION_MODE = "RSSI" # Options: "RANDOM", "RSSI"
 
 # --- STATE VARIABLES ---
 # The Pheromone Grid (Float 0.0 - 255.0)
 hive_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
+
+# The Ghost Grid (Long-Term Memory, No Decay)
+ghost_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
 
 # Drone Registry: { "ID": {x, y, last_seen, rssi, trail} }
 active_drones = {}
@@ -36,11 +41,50 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe("hive/deposit")
     client.subscribe("hive/environment")
     client.subscribe("hive/control/mode")
+    client.subscribe("hive/control/virtual_swarm")
+
+def adjust_virtual_swarm(target_count):
+    global active_drones
+    
+    # Count current virtual drones
+    virtual_ids = [d_id for d_id in active_drones if d_id.startswith(VIRTUAL_PREFIX)]
+    current_count = len(virtual_ids)
+    
+    print(f"/// ADJUSTING VIRTUAL SWARM: {current_count} -> {target_count} ///")
+    
+    if current_count < target_count:
+        # Spawn new ones
+        to_add = target_count - current_count
+        for _ in range(to_add):
+            # Find next available ID
+            vid = 1
+            while f"{VIRTUAL_PREFIX}{vid:02d}" in active_drones:
+                vid += 1
+            new_id = f"{VIRTUAL_PREFIX}{vid:02d}"
+            
+            # Spawn at random location
+            active_drones[new_id] = {
+                "x": random.randint(0, GRID_SIZE-1),
+                "y": random.randint(0, GRID_SIZE-1),
+                "rssi": -42, # The Answer
+                "last_seen": time.time(),
+                "trail": []
+            }
+            
+    elif current_count > target_count:
+        # Kill random ones
+        to_remove = current_count - target_count
+        for _ in range(to_remove):
+            if not virtual_ids: break
+            victim = random.choice(virtual_ids)
+            del active_drones[victim]
+            virtual_ids.remove(victim)
 
 def calculate_gravity_position(drone_id):
     """
     Calculates the weighted center of gravity based on RSSI signal strength.
     Sensors pulling stronger (higher RSSI) attract the drone closer.
+    Uses Moving Average for smoothing.
     """
     if drone_id not in rssi_buffer: return None
     
@@ -50,19 +94,20 @@ def calculate_gravity_position(drone_id):
     sensor_count = 0
     
     # Process each sensor we've heard from recently
-    for sensor, rssi in rssi_buffer[drone_id].items():
+    for sensor, rssi_list in rssi_buffer[drone_id].items():
         if sensor == "last_update": continue
         if sensor not in SENSOR_POSITIONS: continue
         
-        # Check staleness: In a real system we'd track timestamp PER SENSOR
-        # For now, we assume the buffer 'last_update' covers the batch
+        # Calculate Average RSSI (Smoothing)
+        if not rssi_list: continue
+        if isinstance(rssi_list, list):
+            avg_rssi = sum(rssi_list) / len(rssi_list)
+        else:
+            avg_rssi = rssi_list # Fallback for old data
         
         # Weight Logic: Map -90dB to 0.1, -30dB to 0.7
-        # Formula: (100 + rssi) / 100
-        # -90 -> 10/100 = 0.1
-        # -40 -> 60/100 = 0.6
-        weight = (100 + rssi) / 100.0
-        if weight < 0.01: weight = 0.01 # Prevent zero division or negative mass?
+        weight = (100 + avg_rssi) / 100.0
+        if weight < 0.01: weight = 0.01 
         
         px, py = SENSOR_POSITIONS[sensor]
         w_sum_x += px * weight
@@ -87,6 +132,14 @@ def on_message(client, userdata, msg):
             if mode in ["RANDOM", "RSSI"]:
                 POSITION_MODE = mode
                 print(f"/// SWITCHING NAVIGATION TO: {POSITION_MODE} ///")
+            return
+            
+        if msg.topic == "hive/control/virtual_swarm":
+            try:
+                count = int(msg.payload.decode())
+                adjust_virtual_swarm(count)
+            except ValueError:
+                print("Error: Invalid Virtual Swarm Count")
             return
 
         # --- 1. SENSORY INPUT: VISUAL (ENVIRONMENT) ---
@@ -128,9 +181,22 @@ def on_message(client, userdata, msg):
             else:
                 return
 
-            # Update RSSI Buffer
+            # Update RSSI Buffer (With Moving Average)
             if drone_id not in rssi_buffer: rssi_buffer[drone_id] = {}
-            rssi_buffer[drone_id][ear_id] = rssi
+            
+            # Initialize list if first time hearing from this sensor
+            if ear_id not in rssi_buffer[drone_id]: 
+                rssi_buffer[drone_id][ear_id] = []
+            elif not isinstance(rssi_buffer[drone_id][ear_id], list): 
+                # Handle legacy (float) data from old running instances
+                rssi_buffer[drone_id][ear_id] = []
+                
+            # Add to buffer
+            rssi_buffer[drone_id][ear_id].append(rssi)
+            # Keep max 5 samples
+            if len(rssi_buffer[drone_id][ear_id]) > 5:
+                rssi_buffer[drone_id][ear_id].pop(0)
+                
             rssi_buffer[drone_id]["last_update"] = time.time()
 
             # --- CALCULATE POSITION (GRAVITY MODEL) ---
@@ -159,39 +225,62 @@ def on_message(client, userdata, msg):
 
             # B. Deposit Pheromones (Update the Map)
             if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+                # Active Grid (Decays)
                 hive_grid[x][y] += (intensity / 10.0) 
                 if hive_grid[x][y] > 255: hive_grid[x][y] = 255
+                
+                # Ghost Grid (Long Term Memory)
+                ghost_grid[x][y] += 0.5
+                if ghost_grid[x][y] > 255: ghost_grid[x][y] = 255
 
     except Exception as e:
         print(f"Sensory Error: {e}")
 
 # --- PHYSICS ENGINE (Thread) ---
 def physics_loop():
-    global hive_grid, active_drones, DECAY_RATE, CURRENT_MOOD
+    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD
     
     print("/// PHYSICS ENGINE STARTED ///")
     
     while True:
         # 1. Apply Natural Decay (Evaporation)
-        # This is now controlled by the Camera!
+        # Only to the Active Grid! Ghost Grid never forgets.
         hive_grid *= DECAY_RATE
         
-        # 2. Prune Dead Drones (Heartbeat Check)
-        # DISABLED: check via Dashboard logic instead
-        # now = time.time()
-        # dead_ids = []
-        # for d_id, data in active_drones.items():
-        #     if now - data['last_seen'] > 5.0: # 5 seconds without signal = Dead
-        #         dead_ids.append(d_id)
-        # 
-        # for d_id in dead_ids:
-        #     del active_drones[d_id]
-        #     # print(f"Lost contact with drone: {d_id}")
-
+        # 2. Update Virtual Drones
+        virtual_ids = [d for d in active_drones if d.startswith(VIRTUAL_PREFIX)]
+        for v_id in virtual_ids:
+            drone = active_drones[v_id]
+            
+            # Random Walk Logic
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+            
+            new_x = max(0, min(GRID_SIZE-1, drone["x"] + dx))
+            new_y = max(0, min(GRID_SIZE-1, drone["y"] + dy))
+            
+            # Update Position
+            drone["x"] = new_x
+            drone["y"] = new_y
+            drone["last_seen"] = time.time()
+            
+            # Add to Trail
+            drone["trail"].append([new_x, new_y])
+            if len(drone["trail"]) > 10: drone["trail"].pop(0)
+            
+            # Deposit Pheromones (Virtual Drones affect the world!)
+            intensity = 50 # Standard drone strength
+            hive_grid[new_x][new_y] += (intensity / 10.0)
+            if hive_grid[new_x][new_y] > 255: hive_grid[new_x][new_y] = 255
+            
+            ghost_grid[new_x][new_y] += 0.5
+            if ghost_grid[new_x][new_y] > 255: ghost_grid[new_x][new_y] = 255
+        
         # 3. Save State for Dashboard (The "Mental Image")
         # We convert numpy array to standard list for JSON
         state = {
             "grid": hive_grid.tolist(),
+            "ghost_grid": ghost_grid.tolist(),
             "drones": active_drones,
             "mood": CURRENT_MOOD,
             "decay_rate": DECAY_RATE
