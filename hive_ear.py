@@ -5,8 +5,9 @@ import struct
 
 # MQTT Setup
 EAR_ID = "QUEEN" # CHANGE THIS TO 'SENTINEL' ON THE SECOND PI
+MQTT_BROKER = "localhost" # CHANGE TO QUEEN'S IP IF RUNNING ON SENTINEL
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-client.connect("localhost", 1883, 60)
+client.connect(MQTT_BROKER, 1883, 60)
 client.loop_start()
 
 def detection_callback(device, advertisement_data):

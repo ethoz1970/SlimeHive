@@ -1,0 +1,5 @@
+bleak
+paho-mqtt
+flask
+numpy
+pillow
