@@ -368,7 +368,7 @@ HTML_TEMPLATE = """
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 8, 0, 2 * Math.PI); // Larger dots for larger map
-                ctx.fill(); # Solid dot for visibility
+                ctx.fill(); // Solid dot for visibility
                 ctx.stroke();
 
                 // Draw Live Trail (Last 10 steps) ONLY if NOT in History Mode
