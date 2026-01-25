@@ -52,10 +52,17 @@ def gen_frames():
 
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + img_data + b'\r\n')
+            else:
+                # Log error if no stdout
+                if result.stderr:
+                    print(f"Camera Error (stderr): {result.stderr.decode('utf-8')}")
+                else:
+                    print(f"Camera Warning: No frame captured (Exit Code: {result.returncode})")
             
             time.sleep(0.1) # Observation frequency
             
         except Exception as e:
+            print(f"Camera Logic Exception: {e}")
             time.sleep(1)
 
 # --- (Keep your existing HTML Template below this line) ---
