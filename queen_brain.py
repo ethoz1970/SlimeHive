@@ -8,6 +8,10 @@ import threading
 GRID_SIZE = 50
 MQTT_BROKER = "localhost"  # The Queen is the Broker
 HISTORY_FILE = "hive_state.json"
+SENSOR_POSITIONS = {
+    "QUEEN": (25, 25),
+    "SENTINEL": (10, 10)
+}
 
 # --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
@@ -33,51 +37,45 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe("hive/environment")
     client.subscribe("hive/control/mode")
 
-def calculate_distance(rssi):
-    # Rough approximation: -50dB = 1m, -6dB per doubling distance
-    # Let's map RSSI (-30 to -90) to Grid Units (0 to 50)
-    # -30 -> 1 unit
-    # -90 -> 40 units
-    dist = (abs(rssi) - 30) * 0.8
-    if dist < 1: dist = 1
-    return dist
-
-def triangulation(d1, d2):
-    # P1 (Queen) at (25, 25)
-    # P2 (Sentinel) at (10, 10)
-    p1 = np.array([25, 25])
-    p2 = np.array([10, 10])
+def calculate_gravity_position(drone_id):
+    """
+    Calculates the weighted center of gravity based on RSSI signal strength.
+    Sensors pulling stronger (higher RSSI) attract the drone closer.
+    """
+    if drone_id not in rssi_buffer: return None
     
-    # Distance between sensors
-    d_sensors = np.linalg.norm(p1 - p2) # approx 21.2
+    total_weight = 0
+    w_sum_x = 0
+    w_sum_y = 0
+    sensor_count = 0
     
-    # 2D Trilateration logic (Simplified intersection of spheres)
-    # x = (r1^2 - r2^2 + d^2) / (2d)
-    # This finds the point along the line connecting P1-P2
-    a = (d1**2 - d2**2 + d_sensors**2) / (2 * d_sensors)
-    
-    # Height h = sqrt(r1^2 - a^2)
-    # If circles don't touch, just take the closest point
-    term = d1**2 - a**2
-    h = 0
-    if term > 0:
-        h = np.sqrt(term)
+    # Process each sensor we've heard from recently
+    for sensor, rssi in rssi_buffer[drone_id].items():
+        if sensor == "last_update": continue
+        if sensor not in SENSOR_POSITIONS: continue
         
-    # P2 relative to P1
-    p2_p1 = p2 - p1
-    
-    # Point P3 (intersection center)
-    x3 = p1[0] + a * (p2_p1[0] / d_sensors)
-    y3 = p1[1] + a * (p2_p1[1] / d_sensors)
-    
-    # We pick one of the two intersections (ignoring h usually keeps us on the line, which is boring)
-    # But for a demo, let's just return P3 to check logic, effective result is "Between" them
-    # To be fancy, we add +h or -h. Let's add +h to X for bias.
-    
-    fx = x3 + h * (p2_p1[1] / d_sensors)
-    fy = y3 - h * (p2_p1[0] / d_sensors)
-    
-    return int(fx), int(fy)
+        # Check staleness: In a real system we'd track timestamp PER SENSOR
+        # For now, we assume the buffer 'last_update' covers the batch
+        
+        # Weight Logic: Map -90dB to 0.1, -30dB to 0.7
+        # Formula: (100 + rssi) / 100
+        # -90 -> 10/100 = 0.1
+        # -40 -> 60/100 = 0.6
+        weight = (100 + rssi) / 100.0
+        if weight < 0.01: weight = 0.01 # Prevent zero division or negative mass?
+        
+        px, py = SENSOR_POSITIONS[sensor]
+        w_sum_x += px * weight
+        w_sum_y += py * weight
+        total_weight += weight
+        sensor_count += 1
+        
+    if total_weight > 0 and sensor_count > 0:
+        final_x = w_sum_x / total_weight
+        final_y = w_sum_y / total_weight
+        return int(final_x), int(final_y)
+        
+    return None
 
 def on_message(client, userdata, msg):
     global hive_grid, active_drones, DECAY_RATE, CURRENT_MOOD, POSITION_MODE, rssi_buffer
@@ -111,7 +109,6 @@ def on_message(client, userdata, msg):
             # Format: EAR_ID, ID, X, Y, INT, RSSI
             payload = msg.payload.decode('utf-8')
             parts = payload.split(',')
-            print(f"DEBUG: Processing {parts}") # <--- DEBUG LINE
             
             # Default values if legacy format
             ear_id = "UNKNOWN"
@@ -136,18 +133,16 @@ def on_message(client, userdata, msg):
             rssi_buffer[drone_id][ear_id] = rssi
             rssi_buffer[drone_id]["last_update"] = time.time()
 
-            # --- CALCULATE POSITION ---
-            if POSITION_MODE == "RSSI" and "QUEEN" in rssi_buffer[drone_id] and "SENTINEL" in rssi_buffer[drone_id]:
-                # Triangulate
-                d_q = calculate_distance(rssi_buffer[drone_id]["QUEEN"])
-                d_s = calculate_distance(rssi_buffer[drone_id]["SENTINEL"])
-                
-                # Check latency (if data is stale > 2s, ignore)
+            # --- CALCULATE POSITION (GRAVITY MODEL) ---
+            if POSITION_MODE == "RSSI":
+                # Only apply physics if we have recent data
                 if time.time() - rssi_buffer[drone_id]["last_update"] < 2.0:
-                    tx, ty = triangulation(d_q, d_s)
-                    # Bounds check
-                    x = max(0, min(GRID_SIZE-1, tx))
-                    y = max(0, min(GRID_SIZE-1, ty))
+                    pos = calculate_gravity_position(drone_id)
+                    if pos:
+                        tx, ty = pos
+                        # Bounds check
+                        x = max(0, min(GRID_SIZE-1, tx))
+                        y = max(0, min(GRID_SIZE-1, ty))
 
             # A. Update Drone Registry (Where are they NOW?)
             active_drones[drone_id] = {
