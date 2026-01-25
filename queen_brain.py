@@ -203,8 +203,15 @@ def physics_loop():
         }
         
         try:
+            # print("DEBUG: Writing state...")
             with open(HISTORY_FILE, "w") as f:
                 json.dump(state, f)
+                f.flush()
+                # os.fsync(f.fileno()) # Optional, but good for safety
+        except TypeError as te:
+            print(f"JSON Serialization Error: {te}")
+            # Debug: what exactly is wrong?
+            # print(state)
         except Exception as e:
             print(f"Memory Write Error: {e}")
 
