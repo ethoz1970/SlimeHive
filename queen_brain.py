@@ -133,7 +133,7 @@ def calculate_gravity_position(drone_id):
         final_y = int(w_sum_y / total_weight)
         # DEBUG LOGGING
         print(f"[GRAVITY] {drone_id}: Sensors={sensor_count} W={total_weight:.2f} -> ({final_x}, {final_y})")
-        return final_x, final_y
+        return final_x, final_y, sensor_count
         
     return None
 
@@ -220,12 +220,16 @@ def on_message(client, userdata, msg):
             # --- CALCULATE POSITION (ALWAYS ACTIVE FOR REAL DRONES) ---
             # Only apply physics if we have recent data
             if time.time() - rssi_buffer[drone_id]["last_update"] < 2.0:
-                pos = calculate_gravity_position(drone_id)
-                if pos:
-                    tx, ty = pos
-                    # Bounds check
-                    x = max(0, min(GRID_SIZE-1, tx))
-                    y = max(0, min(GRID_SIZE-1, ty))
+                pos_data = calculate_gravity_position(drone_id)
+                if pos_data:
+                    tx, ty, s_count = pos_data
+                    
+                    # SINGLE NODE FIX: Only override if we have triangulation (2+ sensors)
+                    if s_count >= 2:
+                        # Bounds check
+                        x = max(0, min(GRID_SIZE-1, tx))
+                        y = max(0, min(GRID_SIZE-1, ty))
+                    # Else: Trust the drone's self-reported X,Y (from payload)
 
             # A. Update Drone Registry (Where are they NOW?)
             active_drones[drone_id] = {
