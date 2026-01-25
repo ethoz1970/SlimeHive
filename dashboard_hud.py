@@ -7,7 +7,10 @@ import paho.mqtt.client as mqtt
 from PIL import Image
 import glob
 import csv
+import glob
+import csv
 import os  # The new eye
+import threading
 
 app = Flask(__name__)
 
@@ -20,13 +23,19 @@ try:
 except:
     print("Warning: Brain not found (MQTT Disconnected)")
 
+# --- CAMERA SYSTEM ---
+latest_frame = None
+
 def get_camera_command():
     return [
         "rpicam-still", "--width", "320", "--height", "240", # Lower res for speed
         "--encoding", "jpg", "--output", "-", "--timeout", "1", "--nopreview"
     ]
 
-def gen_frames():
+def camera_loop():
+    global latest_frame
+    print("/// CAMERA SENSOR ONLINE ///")
+    
     while True:
         try:
             # 1. Capture Frame
@@ -34,9 +43,9 @@ def gen_frames():
             
             if result.stdout:
                 img_data = result.stdout
+                latest_frame = img_data
                 
                 # --- OPTICAL CORTEX ANALYSIS ---
-                # Check brightness without melting the CPU
                 try:
                     image = Image.open(io.BytesIO(img_data))
                     # Resize to 1x1 pixel to get average brightness instantly
@@ -49,21 +58,23 @@ def gen_frames():
                 except:
                     pass
                 # -------------------------------
-
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + img_data + b'\r\n')
             else:
-                # Log error if no stdout
                 if result.stderr:
-                    print(f"Camera Error (stderr): {result.stderr.decode('utf-8')}")
-                else:
-                    print(f"Camera Warning: No frame captured (Exit Code: {result.returncode})")
+                    print(f"Cam Error: {result.stderr.decode('utf-8')}")
             
-            time.sleep(0.1) # Observation frequency
+            time.sleep(0.5) # 2 FPS is plenty for "Eye" function
             
         except Exception as e:
-            print(f"Camera Logic Exception: {e}")
+            print(f"Cam Exception: {e}")
             time.sleep(1)
+
+def gen_frames():
+    global latest_frame
+    while True:
+        if latest_frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+        time.sleep(0.1)
 
 # --- (Keep your existing HTML Template below this line) ---
 HTML_TEMPLATE = """
@@ -464,4 +475,9 @@ def reset_hive():
     return "OK"
 
 if __name__ == '__main__':
+    # Start Camera Eye
+    t = threading.Thread(target=camera_loop)
+    t.daemon = True
+    t.start()
+    
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
