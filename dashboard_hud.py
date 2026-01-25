@@ -138,7 +138,7 @@ HTML_TEMPLATE = """
         <div class="panel">
             <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
             <div id="map-container">
-                <canvas id="hiveMap" width="500" height="500"></canvas>
+                <canvas id="hiveMap" width="800" height="800"></canvas>
                 <div id="overlays"></div>
             </div>
         </div>
@@ -150,7 +150,15 @@ HTML_TEMPLATE = """
         const droneCounter = document.getElementById('drone-counter');
         const timeFilter = document.getElementById('time-filter');
         const gridSize = 50;
-        const scale = 500 / gridSize; 
+        const scale = 800 / gridSize; 
+
+        function stringToHue(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return Math.abs(hash % 360);
+        }
 
         function getColor(value) {
             if (value < 5) return `rgb(0,0,0)`;
@@ -324,18 +332,26 @@ HTML_TEMPLATE = """
             for (const [id, drone] of Object.entries(drones)) {
                 // ... (Logic to count active/warning/red) ...
                 const diff = now - drone.last_seen;
-                let color = '#f00'; 
                 
-                // Visual Differentiation Logic
+                // Color Generation
+                const hue = stringToHue(id);
+                let lightness = 50; // Active
+                let alpha = 1.0;
+
+                if (diff < 10) { activeCount++; }
+                else if (diff <= 30) { lightness = 30; } // Warning
+                else { lightness = 20; alpha = 0.5; } // Old/Ghostly
+                
+                // Virtual Drones: Shift towards Cyan/Blue range?
+                // Actually, let's keep it purely hash based for uniqueness, 
+                // but maybe add a border or shape later. 
+                // Ensuring Virtual Drones are distinct:
                 if (id.startsWith("V-")) {
-                    color = '#0ff'; // Cyan for Virtual Drones
-                    if (diff > 10) color = '#088'; // Dim Cyan if old (unlikely for virtual)
-                } 
-                else {
-                    // Standard Real Drone Logic
-                    if (diff < 10) { color = '#0f0'; activeCount++; }
-                    else if (diff <= 30) { color = '#ff0'; }
+                    // Force high saturation, specific lightness?
+                    // Let's just use the hash. It's fine.
                 }
+
+                const color = `hsla(${hue}, 100%, ${lightness}%, ${alpha})`;
                 
                 // Always add label to overlay
                 const el = document.createElement('div');
@@ -348,9 +364,11 @@ HTML_TEMPLATE = """
                 
                 // Draw Current Position Dot
                 ctx.strokeStyle = color; 
+                ctx.fillStyle = color;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
-                ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 5, 0, 2 * Math.PI);
+                ctx.arc(drone.x * scale + scale/2, (gridSize - 1 - drone.y) * scale + scale/2, 8, 0, 2 * Math.PI); // Larger dots for larger map
+                ctx.fill(); # Solid dot for visibility
                 ctx.stroke();
 
                 // Draw Live Trail (Last 10 steps) ONLY if NOT in History Mode
@@ -390,7 +408,10 @@ HTML_TEMPLATE = """
                 
                 const item = document.createElement('div');
                 item.style.marginBottom = '4px';
-                item.style.color = color;
+                // item.style.color = color; // Use the unique color!
+                const hue = stringToHue(id);
+                item.style.color = `hsl(${hue}, 100%, 60%)`;
+                
                 item.innerText = `> [${id}] RSSI:${drone.rssi}dB (${Math.round(diff)}s ago)`;
                 list.appendChild(item);
             }
