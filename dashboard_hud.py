@@ -104,6 +104,9 @@ HTML_TEMPLATE = """
                 <option value="14400">4 Hours</option>
             </select>
         </span>
+        <span style="float:right; font-size: 14px; margin-left: 20px;">
+            <button onclick="resetHive()" style="color:#f44; border:1px solid #f44; background:#000; cursor:pointer; font-weight:bold;">RESET HIVE</button>
+        </span>
         <span id="sun-status" style="float:right; font-size: 14px; color: #888;">SUN: SYNCING...</span>
     </h2>
     <div class="container">
@@ -186,6 +189,12 @@ HTML_TEMPLATE = """
         async function setVirtualSwarm() {
             const count = document.getElementById('v-count').value;
             await fetch(`/set_virtual_swarm?count=${count}`);
+        }
+        
+        async function resetHive() {
+            if (confirm("WARNING: This will wipe all hive memory and learned trails. Proceed?")) {
+                await fetch('/reset_hive');
+            }
         }
 
         async function fetchHistory(window) {
@@ -297,8 +306,17 @@ HTML_TEMPLATE = """
                 // ... (Logic to count active/warning/red) ...
                 const diff = now - drone.last_seen;
                 let color = '#f00'; 
-                if (diff < 10) { color = '#0f0'; activeCount++; }
-                else if (diff <= 30) { color = '#ff0'; }
+                
+                // Visual Differentiation Logic
+                if (id.startsWith("V-")) {
+                    color = '#0ff'; // Cyan for Virtual Drones
+                    if (diff > 10) color = '#088'; // Dim Cyan if old (unlikely for virtual)
+                } 
+                else {
+                    // Standard Real Drone Logic
+                    if (diff < 10) { color = '#0f0'; activeCount++; }
+                    else if (diff <= 30) { color = '#ff0'; }
+                }
                 
                 // Always add label to overlay
                 const el = document.createElement('div');
@@ -430,6 +448,11 @@ def set_mode():
 def set_virtual_swarm():
     count = request.args.get('count', '0')
     client.publish("hive/control/virtual_swarm", count)
+    return "OK"
+
+@app.route('/reset_hive')
+def reset_hive():
+    client.publish("hive/control/reset", "1")
     return "OK"
 
 if __name__ == '__main__':

@@ -42,6 +42,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe("hive/environment")
     client.subscribe("hive/control/mode")
     client.subscribe("hive/control/virtual_swarm")
+    client.subscribe("hive/control/reset")
 
 def adjust_virtual_swarm(target_count):
     global active_drones
@@ -79,6 +80,17 @@ def adjust_virtual_swarm(target_count):
             victim = random.choice(virtual_ids)
             del active_drones[victim]
             virtual_ids.remove(victim)
+
+def reset_hive():
+    global hive_grid, ghost_grid, active_drones, rssi_buffer
+    print("/// RESETTING HIVE MEMORY ///")
+    hive_grid.fill(0)
+    ghost_grid.fill(0)
+    # We might want to keep active drones but clear trails? 
+    # User said "All remembered drones are removed".
+    # But if we remove them, real ones will reappear on next ping.
+    active_drones.clear()
+    rssi_buffer.clear()
 
 def calculate_gravity_position(drone_id):
     """
@@ -140,6 +152,10 @@ def on_message(client, userdata, msg):
                 adjust_virtual_swarm(count)
             except ValueError:
                 print("Error: Invalid Virtual Swarm Count")
+            return
+            
+        if msg.topic == "hive/control/reset":
+            reset_hive()
             return
 
         # --- 1. SENSORY INPUT: VISUAL (ENVIRONMENT) ---
