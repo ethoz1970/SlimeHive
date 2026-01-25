@@ -433,10 +433,12 @@ def video_feed():
 @app.route('/data')
 def data():
     try:
-        with open("hive_state.json", "r") as f:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_dir, "hive_state.json")
+        with open(json_path, "r") as f:
             return json.load(f)
     except Exception as e:
-        # print(f"Dashboard Read Error: {e}") # Uncomment if needed
+        print(f"Dashboard Read Error: {e}") 
         return {"grid": [], "drones": {}}
 
 @app.route('/history_data')

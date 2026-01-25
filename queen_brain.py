@@ -5,10 +5,16 @@ import time
 import threading
 import random
 
+import os
+
 # --- CONFIGURATION ---
 GRID_SIZE = 50
 MQTT_BROKER = "localhost"  # The Queen is the Broker
-HISTORY_FILE = "hive_state.json"
+
+# Ensure we write to the same directory as the script
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE = os.path.join(BASE_DIR, "hive_state.json")
+
 SENSOR_POSITIONS = {
     "QUEEN": (25, 25),
     "SENTINEL": (10, 10)
