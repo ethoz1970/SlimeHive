@@ -111,6 +111,7 @@ def on_message(client, userdata, msg):
             # Format: EAR_ID, ID, X, Y, INT, RSSI
             payload = msg.payload.decode('utf-8')
             parts = payload.split(',')
+            print(f"DEBUG: Processing {parts}") # <--- DEBUG LINE
             
             # Default values if legacy format
             ear_id = "UNKNOWN"
