@@ -435,7 +435,8 @@ def data():
     try:
         with open("hive_state.json", "r") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        # print(f"Dashboard Read Error: {e}") # Uncomment if needed
         return {"grid": [], "drones": {}}
 
 @app.route('/history_data')

@@ -345,6 +345,10 @@ def physics_loop():
 
         # Tick Rate (10Hz)
         time.sleep(0.1)
+        
+        # Heartbeat (approx every 2 seconds)
+        if int(time.time()) % 2 == 0 and random.random() < 0.1:
+             print("/// HIVE MEMORY SYNCED ///")
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
