@@ -129,9 +129,11 @@ def calculate_gravity_position(drone_id):
         sensor_count += 1
         
     if total_weight > 0 and sensor_count > 0:
-        final_x = w_sum_x / total_weight
-        final_y = w_sum_y / total_weight
-        return int(final_x), int(final_y)
+        final_x = int(w_sum_x / total_weight)
+        final_y = int(w_sum_y / total_weight)
+        # DEBUG LOGGING
+        print(f"[GRAVITY] {drone_id}: Sensors={sensor_count} W={total_weight:.2f} -> ({final_x}, {final_y})")
+        return final_x, final_y
         
     return None
 

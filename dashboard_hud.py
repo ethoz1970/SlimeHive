@@ -261,7 +261,7 @@ HTML_TEMPLATE = """
                             // Render Ghost Memory (White/Grey Fog)
                             const g = Math.min(255, Math.floor(ghost));
                             // Use low opacity white for a "fog" effect
-                            ctx.fillStyle = `rgba(255, 255, 255, ${g/800})`; 
+                            ctx.fillStyle = `rgba(255, 255, 255, ${g/400})`; 
                             // Or simple Solid Grey if opacity is tricky on black
                             // ctx.fillStyle = `rgb(${Math.floor(g/3)}, ${Math.floor(g/3)}, ${Math.floor(g/3)})`;
                             ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
