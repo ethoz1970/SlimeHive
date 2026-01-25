@@ -156,10 +156,10 @@ HTML_TEMPLATE = """
                     fetchHistory(window);
                     // Still show current active count but maybe indicate it's history view?
                     // Actually, let's keep the drone list live, but the MAP shows history.
-                     drawDrones(data.drones, true); # Pass true to hide standard trails/dots to avoid clutter?
+                     drawDrones(data.drones, true); // Pass true to hide standard trails/dots to avoid clutter?
                 }
                 
-            } catch (e) { }
+            } catch (e) { console.error("Fetch Error:", e); }
         }
         
         function updateSunStatus(mood) {
@@ -206,6 +206,7 @@ HTML_TEMPLATE = """
         }
 
         function drawMap(grid) {
+            if (!grid || grid.length < gridSize) return;
             for (let x = 0; x < gridSize; x++) {
                 for (let y = 0; y < gridSize; y++) {
                     ctx.fillStyle = getColor(grid[x][y]);
