@@ -577,4 +577,10 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
+    print("/// DASHBOARD SERVER STARTING ///")
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    except Exception as e:
+        print(f"Flask Error: {e}")
+    
 
