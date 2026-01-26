@@ -151,6 +151,10 @@ HTML_TEMPLATE = """
             <select id="mode-select" onchange="setMode()" style="background:#000; color:#f0f; border:1px solid #333; font-family:monospace; padding:2px;">
                 <option value="RANDOM" selected>RANDOM WALK</option>
                 <option value="FIND_QUEEN">FIND THE QUEEN</option>
+                <option value="PATROL">PATROL PERIMETER</option>
+                <option value="SWARM">SWARM/FLOCK</option>
+                <option value="SCATTER">SCATTER</option>
+                <option value="TRAIL_FOLLOW">FOLLOW TRAILS</option>
             </select>
         </span>
         <span style="float:right; font-size: 14px; margin-left: 10px;">
@@ -607,7 +611,7 @@ PLAYBACK_TEMPLATE = """
             overflow: hidden;
         }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
-        .container { display: grid; grid-template-columns: 280px 1fr; gap: 20px; height: 85vh; }
+        .container { display: grid; grid-template-columns: 280px 1fr; gap: 20px; height: calc(100vh - 100px); }
         .panel { border: 1px solid #333; background: #050505; display: flex; flex-direction: column; overflow: hidden; }
         .panel-header { background: #111; color: #aaa; padding: 8px; font-size: 12px; border-bottom: 1px solid #333; }
         .archive-list { height: calc(100% - 250px); overflow-y: auto; padding: 10px; }
@@ -621,8 +625,8 @@ PLAYBACK_TEMPLATE = """
         .metadata-row { margin: 4px 0; }
         .metadata-label { color: #888; }
         #map-container { position: relative; display: flex; justify-content: center; align-items: center; flex: 1; min-height: 0; overflow: hidden; }
-        canvas { border: 1px solid #222; max-width: 100%; max-height: 100%; }
-        .controls { padding: 10px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #333; flex-shrink: 0; }
+        canvas { border: 1px solid #222; max-width: 100%; max-height: calc(100vh - 200px); object-fit: contain; }
+        .controls { padding: 10px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #333; flex-shrink: 0; min-height: 40px; background: #111; }
         .controls button {
             background: #111; color: #0f0; border: 1px solid #333;
             padding: 5px 15px; cursor: pointer; font-family: monospace;
@@ -662,13 +666,9 @@ PLAYBACK_TEMPLATE = """
             </div>
         </div>
         <div class="panel">
-            <div class="panel-header">SNAPSHOT VISUALIZATION</div>
-            <div id="map-container">
-                <canvas id="hiveMap" width="800" height="800"></canvas>
-                <div id="overlays"></div>
-            </div>
             <div class="controls" id="playback-controls">
-                <button id="play-btn" onclick="togglePlayback()" disabled>PLAY SESSION</button>
+                <button id="play-btn" onclick="togglePlayback()" disabled>PLAY</button>
+                <button id="stop-btn" onclick="stopPlayback()">STOP</button>
                 <select id="mode-select" onchange="setPlaybackMode()">
                     <option value="simulate">SIMULATE</option>
                     <option value="recorded">RECORDED</option>
@@ -682,8 +682,13 @@ PLAYBACK_TEMPLATE = """
                 <div id="timeline" onclick="seekTimeline(event)">
                     <div id="timeline-progress"></div>
                 </div>
-                <span id="timestamp">No session loaded</span>
+                <span id="timestamp">Select a session</span>
                 <span id="playback-badge" style="display:none; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-left: 10px;"></span>
+            </div>
+            <div class="panel-header">SNAPSHOT VISUALIZATION</div>
+            <div id="map-container">
+                <canvas id="hiveMap" width="800" height="800"></canvas>
+                <div id="overlays"></div>
             </div>
         </div>
     </div>

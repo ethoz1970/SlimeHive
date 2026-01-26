@@ -313,25 +313,119 @@ def physics_loop():
 
             # --- BEHAVIOR TREE ---
             if SIMULATION_MODE == "FIND_QUEEN":
-                # Move towards (25, 25)
+                # Move towards center (Queen position)
                 target_x, target_y = GRID_SIZE // 2, GRID_SIZE // 2
-                
+
                 # Vector to target
                 vx = target_x - drone["x"]
                 vy = target_y - drone["y"]
-                
+
                 # Normalize (Sign) + Random Noise
-                # We want a chance to move closer
                 dx = int(np.sign(vx)) if abs(vx) > 0 else 0
                 dy = int(np.sign(vy)) if abs(vy) > 0 else 0
-                
+
                 # Add randomness so they don't form a conga line
                 if random.random() < 0.3:
                     dx = random.choice([-1, 0, 1])
                 if random.random() < 0.3:
                     dy = random.choice([-1, 0, 1])
-                    
-            else: # RANDOM (Default)
+
+            elif SIMULATION_MODE == "PATROL":
+                # Patrol around the perimeter of the grid
+                x, y = drone["x"], drone["y"]
+                margin = 10  # Distance from edge for patrol path
+
+                # Determine which edge we're closest to and move clockwise
+                if y <= margin and x < GRID_SIZE - margin:
+                    dx, dy = 1, 0  # Top edge: move right
+                elif x >= GRID_SIZE - margin and y < GRID_SIZE - margin:
+                    dx, dy = 0, 1  # Right edge: move down
+                elif y >= GRID_SIZE - margin and x > margin:
+                    dx, dy = -1, 0  # Bottom edge: move left
+                elif x <= margin and y > margin:
+                    dx, dy = 0, -1  # Left edge: move up
+                else:
+                    # Not on perimeter, move toward nearest edge
+                    dx = 1 if x < GRID_SIZE // 2 else -1
+                    dy = 0
+
+                # Add slight randomness
+                if random.random() < 0.2:
+                    dx += random.choice([-1, 0, 1])
+                    dy += random.choice([-1, 0, 1])
+
+            elif SIMULATION_MODE == "SWARM":
+                # Flocking behavior: stay together as a group
+                # Calculate center of mass of all virtual drones
+                vdrones = [d for did, d in active_drones.items() if did.startswith(VIRTUAL_PREFIX)]
+                if len(vdrones) > 1:
+                    cx = sum(d["x"] for d in vdrones) / len(vdrones)
+                    cy = sum(d["y"] for d in vdrones) / len(vdrones)
+
+                    # Cohesion: move toward center of swarm
+                    vx = cx - drone["x"]
+                    vy = cy - drone["y"]
+
+                    # Only apply cohesion if far from center
+                    dist = (vx**2 + vy**2) ** 0.5
+                    if dist > 5:
+                        dx = int(np.sign(vx))
+                        dy = int(np.sign(vy))
+                    else:
+                        # Close to swarm, random wander
+                        dx = random.choice([-1, 0, 1])
+                        dy = random.choice([-1, 0, 1])
+
+                    # Add random movement to prevent stacking
+                    if random.random() < 0.4:
+                        dx = random.choice([-1, 0, 1])
+                        dy = random.choice([-1, 0, 1])
+                else:
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+            elif SIMULATION_MODE == "SCATTER":
+                # Scatter: move away from center
+                center_x, center_y = GRID_SIZE // 2, GRID_SIZE // 2
+                vx = drone["x"] - center_x
+                vy = drone["y"] - center_y
+
+                # Move away from center
+                dx = int(np.sign(vx)) if abs(vx) > 0 else random.choice([-1, 1])
+                dy = int(np.sign(vy)) if abs(vy) > 0 else random.choice([-1, 1])
+
+                # Add randomness
+                if random.random() < 0.3:
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+            elif SIMULATION_MODE == "TRAIL_FOLLOW":
+                # Follow pheromone trails in the ghost grid
+                x, y = drone["x"], drone["y"]
+                best_dx, best_dy = 0, 0
+                best_pheromone = 0
+
+                # Check all 8 neighbors + current
+                for check_dx in [-1, 0, 1]:
+                    for check_dy in [-1, 0, 1]:
+                        nx = x + check_dx
+                        ny = y + check_dy
+                        if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                            p = ghost_grid[nx][ny]
+                            # Add randomness to break ties and explore
+                            p += random.random() * 5
+                            if p > best_pheromone:
+                                best_pheromone = p
+                                best_dx, best_dy = check_dx, check_dy
+
+                dx, dy = best_dx, best_dy
+
+                # If no pheromones nearby, random walk
+                if best_pheromone < 1:
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+            else:  # RANDOM (Default)
                 dx = random.choice([-1, 0, 1])
                 dy = random.choice([-1, 0, 1])
             
