@@ -389,7 +389,7 @@ HTML_TEMPLATE = """
         let tickCounter = 0;
 
         function drawDrones(drones, historyMode=false) {
-            updateDroneFilter(Object.keys(drones)); // Fix Filter in Live Mode
+            // updateDroneFilter(Object.keys(drones)); // Moved to throttled block below
             overlays.innerHTML = ''; 
             const now = Date.now() / 1000;
             let activeCount = 0;
@@ -459,6 +459,10 @@ HTML_TEMPLATE = """
             tickCounter++;
             if (tickCounter % 10 === 0) {
                 updateDroneList(drones);
+            }
+            // DROPDOWN FIX: Update Filter only every 50 ticks (5 sec) to allow selection
+            if (tickCounter % 50 === 0) {
+                 updateDroneFilter(Object.keys(drones));
             }
         }
 
