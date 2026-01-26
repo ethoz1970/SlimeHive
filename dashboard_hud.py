@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, Response, request
+from flask import Flask, render_template_string, Response, request, jsonify
 import json
 import time
 import io
@@ -7,9 +7,8 @@ import paho.mqtt.client as mqtt
 from PIL import Image
 import glob
 import csv
-import glob
-import csv
-import os  # The new eye
+import os
+import re
 import threading
 import logging
 
@@ -109,7 +108,8 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <h2>
-        /// HIVE MIND: RESEARCH TERMINAL /// 
+        /// HIVE MIND: RESEARCH TERMINAL ///
+        <a href="/playback" style="float:right; font-size: 14px; color:#0af; text-decoration:none; margin-left: 20px; border: 1px solid #0af; padding: 2px 8px;">[PLAYBACK]</a>
         <span style="float:right; font-size: 14px; margin-left: 10px;">
             <span style="color:#aaa;">SIMULATION:</span>
             <select id="mode-select" onchange="setMode()" style="background:#000; color:#f0f; border:1px solid #333; font-family:monospace; padding:2px;">
@@ -521,6 +521,463 @@ HTML_TEMPLATE = """
 </html>
 """
 
+PLAYBACK_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HIVE PLAYBACK TERMINAL</title>
+    <style>
+        body {
+            background-color: #000; color: #0f0;
+            font-family: 'Courier New', monospace;
+            margin: 0; padding: 20px;
+            overflow: hidden;
+        }
+        h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+        .container { display: grid; grid-template-columns: 280px 1fr; gap: 20px; height: 85vh; }
+        .panel { border: 1px solid #333; background: #050505; }
+        .panel-header { background: #111; color: #aaa; padding: 8px; font-size: 12px; border-bottom: 1px solid #333; }
+        .archive-list { height: calc(100% - 250px); overflow-y: auto; padding: 10px; }
+        .archive-item {
+            padding: 8px; margin: 4px 0; cursor: pointer;
+            border: 1px solid #222; transition: all 0.2s;
+        }
+        .archive-item:hover { border-color: #0f0; background: #111; }
+        .archive-item.selected { border-color: #0f0; background: #0f02; }
+        .metadata { padding: 10px; font-size: 12px; border-top: 1px solid #333; }
+        .metadata-row { margin: 4px 0; }
+        .metadata-label { color: #888; }
+        #map-container { position: relative; display: flex; justify-content: center; align-items: center; height: calc(100% - 80px); }
+        canvas { border: 1px solid #222; max-width: 100%; max-height: 100%; }
+        .controls { padding: 10px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #333; }
+        .controls button {
+            background: #111; color: #0f0; border: 1px solid #333;
+            padding: 5px 15px; cursor: pointer; font-family: monospace;
+        }
+        .controls button:hover { border-color: #0f0; }
+        .controls button:disabled { color: #555; cursor: not-allowed; }
+        .controls select {
+            background: #000; color: #0f0; border: 1px solid #333;
+            padding: 5px; font-family: monospace;
+        }
+        #timeline { flex: 1; height: 20px; background: #111; cursor: pointer; }
+        #timeline-progress { height: 100%; background: #0f03; width: 0%; }
+        #timestamp { color: #888; font-size: 11px; min-width: 160px; }
+        .no-csv { color: #666; font-style: italic; }
+        .drone-label { position: absolute; color: white; font-weight: bold; font-size: 10px; text-shadow: 0 0 2px #000; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <h2>
+        /// HIVE MIND: PLAYBACK TERMINAL ///
+        <a href="/" style="float:right; font-size: 14px; color:#0f0; text-decoration:none; margin-left: 20px; border: 1px solid #0f0; padding: 2px 8px;">[LIVE DASHBOARD]</a>
+    </h2>
+    <div class="container">
+        <div class="panel">
+            <div class="panel-header">ARCHIVED SESSIONS</div>
+            <div class="archive-list" id="archive-list">
+                <div style="color:#666;">Loading archives...</div>
+            </div>
+            <div class="metadata" id="metadata">
+                <div class="panel-header" style="margin: -10px -10px 10px -10px; padding: 8px;">METADATA</div>
+                <div class="metadata-row"><span class="metadata-label">Mood:</span> <span id="meta-mood">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Decay:</span> <span id="meta-decay">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Sim Mode:</span> <span id="meta-mode">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Drones:</span> <span id="meta-drones">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Archived:</span> <span id="meta-time">-</span></div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-header">SNAPSHOT VISUALIZATION</div>
+            <div id="map-container">
+                <canvas id="hiveMap" width="800" height="800"></canvas>
+                <div id="overlays"></div>
+            </div>
+            <div class="controls" id="playback-controls">
+                <button id="play-btn" onclick="togglePlayback()" disabled>PLAY SESSION</button>
+                <select id="speed-select" onchange="setSpeed()">
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="2">2x</option>
+                    <option value="4">4x</option>
+                </select>
+                <div id="timeline" onclick="seekTimeline(event)">
+                    <div id="timeline-progress"></div>
+                </div>
+                <span id="timestamp">No session loaded</span>
+            </div>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('hiveMap');
+        const ctx = canvas.getContext('2d');
+        const overlays = document.getElementById('overlays');
+        const gridSize = 50;
+        const scale = 800 / gridSize;
+
+        let archives = [];
+        let currentArchive = null;
+        let flightData = null;
+        let isPlaying = false;
+        let playbackSpeed = 1;
+        let playbackIndex = 0;
+        let animationId = null;
+        let lastFrameTime = 0;
+
+        function stringToHue(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return Math.abs(hash % 360);
+        }
+
+        function getColor(value) {
+            if (value < 5) return `rgb(0,0,0)`;
+            if (value < 50) return `rgb(${value*5}, 0, 0)`;
+            if (value < 150) return `rgb(255, ${value}, 0)`;
+            return `rgb(255, 255, ${Math.min(255, value-100)})`;
+        }
+
+        async function loadArchives() {
+            try {
+                const res = await fetch('/api/archives');
+                archives = await res.json();
+                renderArchiveList();
+            } catch(e) {
+                document.getElementById('archive-list').innerHTML = '<div style="color:#f00;">Error loading archives</div>';
+            }
+        }
+
+        function renderArchiveList() {
+            const list = document.getElementById('archive-list');
+            if (archives.length === 0) {
+                list.innerHTML = '<div style="color:#666;">No archived sessions found</div>';
+                return;
+            }
+
+            list.innerHTML = archives.map((a, i) => `
+                <div class="archive-item" onclick="selectArchive(${i})" id="archive-${i}">
+                    <div style="color:#0f0;">> ${a.display_time}</div>
+                    <div style="color:#666; font-size:11px; margin-top:4px;">${a.filename}</div>
+                </div>
+            `).join('');
+        }
+
+        async function selectArchive(index) {
+            // Update selection UI
+            document.querySelectorAll('.archive-item').forEach(el => el.classList.remove('selected'));
+            document.getElementById(`archive-${index}`).classList.add('selected');
+
+            const archive = archives[index];
+
+            try {
+                // Load archive data
+                const res = await fetch(`/api/archive/${archive.filename}`);
+                currentArchive = await res.json();
+
+                // Update metadata
+                document.getElementById('meta-mood').innerText = currentArchive.mood || 'UNKNOWN';
+                document.getElementById('meta-mood').style.color = currentArchive.mood === 'FRENZY' ? '#ff0' : '#44f';
+                document.getElementById('meta-decay').innerText = currentArchive.decay_rate || '-';
+                document.getElementById('meta-mode').innerText = currentArchive.mode || '-';
+                document.getElementById('meta-drones').innerText = Object.keys(currentArchive.drones || {}).length;
+                document.getElementById('meta-time').innerText = archive.display_time;
+
+                // Render static snapshot
+                renderSnapshot();
+
+                // Check for matching flight log
+                await checkFlightLog(archive.timestamp);
+
+            } catch(e) {
+                console.error('Error loading archive:', e);
+            }
+        }
+
+        async function checkFlightLog(timestamp) {
+            const playBtn = document.getElementById('play-btn');
+            const timestampEl = document.getElementById('timestamp');
+
+            try {
+                const res = await fetch('/api/flight_logs');
+                const logs = await res.json();
+
+                // Find matching log (within same session - check if timestamp is within log range)
+                const matchingLog = logs.find(log => {
+                    // Check if archive timestamp falls within this log's timeframe
+                    return log.start_time <= timestamp && (log.end_time >= timestamp || log.end_time === 0);
+                });
+
+                if (matchingLog) {
+                    // Load the flight data
+                    const dataRes = await fetch(`/api/flight_log/${matchingLog.filename}`);
+                    flightData = await dataRes.json();
+
+                    playBtn.disabled = false;
+                    timestampEl.innerText = `Flight data: ${flightData.length} points`;
+                } else {
+                    flightData = null;
+                    playBtn.disabled = true;
+                    timestampEl.innerHTML = '<span class="no-csv">No flight data available</span>';
+                }
+            } catch(e) {
+                flightData = null;
+                playBtn.disabled = true;
+                timestampEl.innerHTML = '<span class="no-csv">No flight data available</span>';
+            }
+        }
+
+        function renderSnapshot() {
+            if (!currentArchive) return;
+
+            // Clear canvas
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw heat map
+            drawMap(currentArchive.grid, currentArchive.ghost_grid);
+
+            // Draw queen
+            drawQueen();
+
+            // Draw sentinel
+            drawSentinel();
+
+            // Draw drones at their final positions
+            drawDrones(currentArchive.drones);
+        }
+
+        function drawMap(grid, ghost_grid) {
+            if (!grid || grid.length < gridSize) return;
+            const hasGhost = ghost_grid && ghost_grid.length === gridSize;
+
+            for (let x = 0; x < gridSize; x++) {
+                for (let y = 0; y < gridSize; y++) {
+                    const active = grid[x][y];
+
+                    if (active > 5) {
+                        ctx.fillStyle = getColor(active);
+                        ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                    } else if (hasGhost) {
+                        const ghost = ghost_grid[x][y];
+                        if (ghost > 10) {
+                            const g = Math.min(255, Math.floor(ghost));
+                            ctx.fillStyle = `rgba(255, 255, 255, ${g/400})`;
+                            ctx.fillRect(x * scale, (gridSize - 1 - y) * scale, scale, scale);
+                        }
+                    }
+                }
+            }
+        }
+
+        function drawQueen() {
+            const x = gridSize / 2;
+            const y = gridSize / 2;
+            const px = x * scale;
+            const py = (gridSize - 1 - y) * scale;
+
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.moveTo(px, py - 8);
+            ctx.lineTo(px + 8, py);
+            ctx.lineTo(px, py + 8);
+            ctx.lineTo(px - 8, py);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 10px monospace';
+            ctx.fillText("Q", px - 3.5, py + 3.5);
+        }
+
+        function drawSentinel() {
+            const x = 10;
+            const y = 10;
+            const px = x * scale;
+            const py = (gridSize - 1 - y) * scale;
+
+            ctx.fillStyle = '#0af';
+            ctx.beginPath();
+            ctx.moveTo(px, py - 8);
+            ctx.lineTo(px + 8, py + 8);
+            ctx.lineTo(px - 8, py + 8);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px monospace';
+            ctx.fillText("S", px - 3.5, py + 6);
+        }
+
+        function drawDrones(drones, positions = null) {
+            overlays.innerHTML = '';
+
+            for (const [id, drone] of Object.entries(drones || {})) {
+                const hue = stringToHue(id);
+                const color = `hsl(${hue}, 100%, 50%)`;
+
+                // Use provided positions or drone's stored position
+                const x = positions && positions[id] ? positions[id].x : drone.x;
+                const y = positions && positions[id] ? positions[id].y : drone.y;
+
+                // Draw label
+                const el = document.createElement('div');
+                el.className = 'drone-label';
+                el.style.left = (x * scale + 10) + 'px';
+                el.style.top = ((gridSize - 1 - y) * scale - 10) + 'px';
+                el.innerHTML = `[${id}]`;
+                el.style.color = color;
+                overlays.appendChild(el);
+
+                // Draw dot
+                ctx.fillStyle = color;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(x * scale + scale/2, (gridSize - 1 - y) * scale + scale/2, 8, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+
+        function togglePlayback() {
+            if (isPlaying) {
+                stopPlayback();
+            } else {
+                startPlayback();
+            }
+        }
+
+        function startPlayback() {
+            if (!flightData || flightData.length === 0) return;
+
+            isPlaying = true;
+            document.getElementById('play-btn').innerText = 'PAUSE';
+            playbackIndex = 0;
+            lastFrameTime = performance.now();
+            animate();
+        }
+
+        function stopPlayback() {
+            isPlaying = false;
+            document.getElementById('play-btn').innerText = 'PLAY SESSION';
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            // Return to static snapshot
+            renderSnapshot();
+        }
+
+        function setSpeed() {
+            playbackSpeed = parseFloat(document.getElementById('speed-select').value);
+        }
+
+        function seekTimeline(event) {
+            if (!flightData || flightData.length === 0) return;
+
+            const timeline = document.getElementById('timeline');
+            const rect = timeline.getBoundingClientRect();
+            const pct = (event.clientX - rect.left) / rect.width;
+            playbackIndex = Math.floor(pct * flightData.length);
+
+            if (!isPlaying) {
+                // Show single frame at seek position
+                renderFrame(playbackIndex);
+            }
+        }
+
+        function animate() {
+            if (!isPlaying) return;
+
+            const now = performance.now();
+            const delta = now - lastFrameTime;
+
+            // Advance based on speed (assuming ~100ms between original data points)
+            if (delta > (100 / playbackSpeed)) {
+                lastFrameTime = now;
+                playbackIndex++;
+
+                if (playbackIndex >= flightData.length) {
+                    stopPlayback();
+                    return;
+                }
+
+                renderFrame(playbackIndex);
+            }
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        function renderFrame(index) {
+            if (!flightData || !currentArchive) return;
+
+            // Clear and draw base map
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawMap(currentArchive.grid, currentArchive.ghost_grid);
+            drawQueen();
+            drawSentinel();
+
+            // Build current positions from flight data up to this point
+            const positions = {};
+            const trails = {};
+
+            // Look back through recent history for trails
+            const trailLength = 20;
+            const startIdx = Math.max(0, index - trailLength);
+
+            for (let i = startIdx; i <= index; i++) {
+                const point = flightData[i];
+                if (!point) continue;
+
+                const id = point.drone_id;
+                positions[id] = { x: point.x, y: point.y };
+
+                if (!trails[id]) trails[id] = [];
+                trails[id].push([point.x, point.y]);
+            }
+
+            // Draw trails
+            for (const [id, trail] of Object.entries(trails)) {
+                if (trail.length < 2) continue;
+
+                const hue = stringToHue(id);
+                ctx.beginPath();
+                ctx.strokeStyle = `hsl(${hue}, 100%, 50%)`;
+                ctx.globalAlpha = 0.4;
+                ctx.lineWidth = 2;
+
+                ctx.moveTo(trail[0][0] * scale + scale/2, (gridSize - 1 - trail[0][1]) * scale + scale/2);
+                for (let i = 1; i < trail.length; i++) {
+                    ctx.lineTo(trail[i][0] * scale + scale/2, (gridSize - 1 - trail[i][1]) * scale + scale/2);
+                }
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
+            }
+
+            // Draw drones at current positions
+            drawDrones(currentArchive.drones, positions);
+
+            // Update timeline and timestamp
+            const pct = (index / flightData.length) * 100;
+            document.getElementById('timeline-progress').style.width = pct + '%';
+
+            const point = flightData[index];
+            if (point) {
+                const date = new Date(point.timestamp * 1000);
+                document.getElementById('timestamp').innerText = date.toLocaleTimeString() + ` (${index}/${flightData.length})`;
+            }
+        }
+
+        // Initialize
+        loadArchives();
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -596,6 +1053,193 @@ def set_virtual_swarm():
 def reset_hive():
     client.publish("hive/control/reset", "1")
     return "OK"
+
+# --- PLAYBACK DASHBOARD ROUTES ---
+
+@app.route('/playback')
+def playback():
+    return render_template_string(PLAYBACK_TEMPLATE)
+
+@app.route('/api/archives')
+def list_archives():
+    """List archived JSON snapshots from snapshots/ directory"""
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        snapshots_dir = os.path.join(base_dir, "snapshots")
+
+        if not os.path.exists(snapshots_dir):
+            return jsonify([])
+
+        archives = []
+        # Pattern: hive_state_ARCHIVE_YYYYMMDD_HHMMSS.json
+        pattern = re.compile(r'^hive_state_ARCHIVE_(\d{8})_(\d{6})\.json$')
+
+        for filename in os.listdir(snapshots_dir):
+            match = pattern.match(filename)
+            if match:
+                date_str = match.group(1)  # YYYYMMDD
+                time_str = match.group(2)  # HHMMSS
+
+                # Parse timestamp
+                try:
+                    year = int(date_str[0:4])
+                    month = int(date_str[4:6])
+                    day = int(date_str[6:8])
+                    hour = int(time_str[0:2])
+                    minute = int(time_str[2:4])
+                    second = int(time_str[4:6])
+
+                    import datetime
+                    dt = datetime.datetime(year, month, day, hour, minute, second)
+                    timestamp = dt.timestamp()
+                    display_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                    archives.append({
+                        'filename': filename,
+                        'timestamp': timestamp,
+                        'display_time': display_time
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+        # Sort by timestamp, newest first
+        archives.sort(key=lambda x: x['timestamp'], reverse=True)
+        return jsonify(archives)
+
+    except Exception as e:
+        print(f"Archive List Error: {e}")
+        return jsonify([])
+
+@app.route('/api/archive/<filename>')
+def get_archive(filename):
+    """Return contents of a specific archive file"""
+    try:
+        # Security: Validate filename pattern to prevent path traversal
+        pattern = re.compile(r'^hive_state_ARCHIVE_\d{8}_\d{6}\.json$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(base_dir, "snapshots", filename)
+
+        # Additional security check
+        if not os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(base_dir, "snapshots"))):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Archive not found'}), 404
+
+        with open(file_path, 'r') as f:
+            return json.load(f)
+
+    except Exception as e:
+        print(f"Archive Read Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/flight_logs')
+def list_flight_logs():
+    """List available flight log CSV files"""
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        logs_dir = os.path.join(base_dir, "flight_logs")
+
+        if not os.path.exists(logs_dir):
+            return jsonify([])
+
+        logs = []
+        # Pattern: flight_log_YYYYMMDD_HHMMSS.csv
+        pattern = re.compile(r'^flight_log_(\d{8})_(\d{6})\.csv$')
+
+        for filename in os.listdir(logs_dir):
+            match = pattern.match(filename)
+            if match:
+                date_str = match.group(1)
+                time_str = match.group(2)
+
+                try:
+                    import datetime
+                    year = int(date_str[0:4])
+                    month = int(date_str[4:6])
+                    day = int(date_str[6:8])
+                    hour = int(time_str[0:2])
+                    minute = int(time_str[2:4])
+                    second = int(time_str[4:6])
+
+                    dt = datetime.datetime(year, month, day, hour, minute, second)
+                    start_time = dt.timestamp()
+
+                    # Get end time from file (last entry timestamp)
+                    file_path = os.path.join(logs_dir, filename)
+                    end_time = 0
+
+                    with open(file_path, 'r') as f:
+                        reader = csv.reader(f)
+                        next(reader, None)  # Skip header
+                        for row in reader:
+                            if row:
+                                try:
+                                    end_time = float(row[0])
+                                except:
+                                    pass
+
+                    logs.append({
+                        'filename': filename,
+                        'start_time': start_time,
+                        'end_time': end_time
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+        # Sort by start time, newest first
+        logs.sort(key=lambda x: x['start_time'], reverse=True)
+        return jsonify(logs)
+
+    except Exception as e:
+        print(f"Flight Log List Error: {e}")
+        return jsonify([])
+
+@app.route('/api/flight_log/<filename>')
+def get_flight_log(filename):
+    """Return contents of a specific flight log as JSON array"""
+    try:
+        # Security: Validate filename pattern
+        pattern = re.compile(r'^flight_log_\d{8}_\d{6}\.csv$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(base_dir, "flight_logs", filename)
+
+        # Additional security check
+        if not os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(base_dir, "flight_logs"))):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Flight log not found'}), 404
+
+        data = []
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # Skip header
+            for row in reader:
+                if row and len(row) >= 4:
+                    try:
+                        data.append({
+                            'timestamp': float(row[0]),
+                            'drone_id': row[1],
+                            'x': int(row[2]),
+                            'y': int(row[3]),
+                            'intensity': int(row[4]) if len(row) > 4 else 0,
+                            'rssi': int(row[5]) if len(row) > 5 else 0
+                        })
+                    except (ValueError, IndexError):
+                        continue
+
+        return jsonify(data)
+
+    except Exception as e:
+        print(f"Flight Log Read Error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     # Start Camera Eye
