@@ -351,9 +351,13 @@ def physics_loop():
             intensity = 50 # Standard drone strength
             hive_grid[new_x][new_y] += (intensity / 10.0)
             if hive_grid[new_x][new_y] > 255: hive_grid[new_x][new_y] = 255
-            
+
             ghost_grid[new_x][new_y] += 0.5
             if ghost_grid[new_x][new_y] > 255: ghost_grid[new_x][new_y] = 255
+
+            # Publish to MQTT for logger to record
+            rssi = drone.get("rssi", -50)
+            client.publish("hive/deposit", f"VIRTUAL,{v_id},{new_x},{new_y},{intensity},{rssi}")
         
         # 3. Save State for Dashboard (The "Mental Image")
         # We convert numpy array to standard list for JSON
