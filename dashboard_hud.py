@@ -1071,20 +1071,18 @@ def list_archives():
             return jsonify([])
 
         archives = []
-        # Pattern: hive_state_ARCHIVE_YYYYMMDD_HHMMSS.json
-        pattern = re.compile(r'^hive_state_ARCHIVE_(\d{8})_(\d{6})\.json$')
+        # Pattern: hive_state_ARCHIVE_YYYY-MM-DD_HHMMSS.json
+        pattern = re.compile(r'^hive_state_ARCHIVE_(\d{4})-(\d{2})-(\d{2})_(\d{6})\.json$')
 
         for filename in os.listdir(snapshots_dir):
             match = pattern.match(filename)
             if match:
-                date_str = match.group(1)  # YYYYMMDD
-                time_str = match.group(2)  # HHMMSS
-
-                # Parse timestamp
+                # Parse timestamp from groups: year, month, day, time
                 try:
-                    year = int(date_str[0:4])
-                    month = int(date_str[4:6])
-                    day = int(date_str[6:8])
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                    day = int(match.group(3))
+                    time_str = match.group(4)
                     hour = int(time_str[0:2])
                     minute = int(time_str[2:4])
                     second = int(time_str[4:6])
@@ -1115,7 +1113,7 @@ def get_archive(filename):
     """Return contents of a specific archive file"""
     try:
         # Security: Validate filename pattern to prevent path traversal
-        pattern = re.compile(r'^hive_state_ARCHIVE_\d{8}_\d{6}\.json$')
+        pattern = re.compile(r'^hive_state_ARCHIVE_\d{4}-\d{2}-\d{2}_\d{6}\.json$')
         if not pattern.match(filename):
             return jsonify({'error': 'Invalid filename'}), 400
 
@@ -1147,20 +1145,18 @@ def list_flight_logs():
             return jsonify([])
 
         logs = []
-        # Pattern: flight_log_YYYYMMDD_HHMMSS.csv
-        pattern = re.compile(r'^flight_log_(\d{8})_(\d{6})\.csv$')
+        # Pattern: session_YYYY-MM-DD_HHMMSS.csv
+        pattern = re.compile(r'^session_(\d{4})-(\d{2})-(\d{2})_(\d{6})\.csv$')
 
         for filename in os.listdir(logs_dir):
             match = pattern.match(filename)
             if match:
-                date_str = match.group(1)
-                time_str = match.group(2)
-
                 try:
                     import datetime
-                    year = int(date_str[0:4])
-                    month = int(date_str[4:6])
-                    day = int(date_str[6:8])
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                    day = int(match.group(3))
+                    time_str = match.group(4)
                     hour = int(time_str[0:2])
                     minute = int(time_str[2:4])
                     second = int(time_str[4:6])
@@ -1203,7 +1199,7 @@ def get_flight_log(filename):
     """Return contents of a specific flight log as JSON array"""
     try:
         # Security: Validate filename pattern
-        pattern = re.compile(r'^flight_log_\d{8}_\d{6}\.csv$')
+        pattern = re.compile(r'^session_\d{4}-\d{2}-\d{2}_\d{6}\.csv$')
         if not pattern.match(filename):
             return jsonify({'error': 'Invalid filename'}), 400
 
