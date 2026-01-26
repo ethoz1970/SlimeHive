@@ -357,15 +357,18 @@ def physics_loop():
         }
         
         try:
-            # print("DEBUG: Writing state...")
-            with open(HISTORY_FILE, "w") as f:
+            # Atomic Write: Write to .tmp then rename
+            tmp_file = HISTORY_FILE + ".tmp"
+            with open(tmp_file, "w") as f:
                 json.dump(state, f)
                 f.flush()
-                # os.fsync(f.fileno()) # Optional, but good for safety
+                os.fsync(f.fileno()) # Ensure data is on disk
+            
+            # Atomic swap
+            os.replace(tmp_file, HISTORY_FILE)
+            
         except TypeError as te:
             print(f"JSON Serialization Error: {te}")
-            # Debug: what exactly is wrong?
-            # print(state)
         except Exception as e:
             print(f"Memory Write Error: {e}")
 
