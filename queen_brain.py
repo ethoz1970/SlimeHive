@@ -4,6 +4,8 @@ import json
 import time
 import threading
 import random
+import shutil
+from datetime import datetime
 
 import os
 
@@ -91,6 +93,23 @@ def adjust_virtual_swarm(target_count):
 def reset_hive():
     global hive_grid, ghost_grid, active_drones, rssi_buffer
     print("/// RESETTING HIVE MEMORY ///")
+    
+    # 1. Archive Current State
+    try:
+        snapshot_dir = os.path.join(BASE_DIR, "snapshots")
+        if not os.path.exists(snapshot_dir):
+            os.makedirs(snapshot_dir)
+            
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        backup_path = os.path.join(snapshot_dir, f"hive_state_ARCHIVE_{timestamp}.json")
+        
+        if os.path.exists(HISTORY_FILE):
+            shutil.copy2(HISTORY_FILE, backup_path)
+            print(f"Archived state to: {backup_path}")
+    except Exception as e:
+        print(f"Archive Error: {e}")
+    
+    # 2. Wipe Memory
     hive_grid.fill(0)
     ghost_grid.fill(0)
     # We might want to keep active drones but clear trails? 

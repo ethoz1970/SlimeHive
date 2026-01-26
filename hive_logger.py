@@ -9,19 +9,44 @@ LOG_DIR = "flight_logs"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-# Generate filename based on start time (e.g., flight_logs/session_2026-01-23_1430.csv)
-filename = f"{LOG_DIR}/session_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv"
+# Global file handle
+current_file = None
+current_filename = None
 
-# Initialize CSV
-with open(filename, "w", newline='') as f:
-    writer = csv.writer(f)
+def start_new_log():
+    global current_file, current_filename
+    
+    # Close existing if open
+    if current_file:
+        current_file.close()
+        print(f"Closed log: {current_filename}")
+        
+    # Generate new filename
+    current_filename = f"{LOG_DIR}/session_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.csv"
+    
+    # Open new file
+    current_file = open(current_filename, "w", newline='')
+    writer = csv.writer(current_file)
     writer.writerow(["timestamp", "ear_id", "drone_id", "x", "y", "intensity", "rssi"])
+    current_file.flush()
+    
+    print(f"--- SCRIBE ONLINE ---")
+    print(f"Recording to: {current_filename}")
 
-print(f"--- SCRIBE ONLINE ---")
-print(f"Recording to: {filename}")
+# Initial Start
+start_new_log()
 
 def on_message(client, userdata, msg):
+    global current_file
+    
     try:
+        # --- RESET COMMAND ---
+        if msg.topic == "hive/control/reset":
+            print("\n/// ROTATING LOGS ///")
+            start_new_log()
+            return
+
+        # --- DATA LOGGING ---
         # Decode the message
         payload = msg.payload.decode('utf-8')
         parts = payload.split(',')
@@ -39,10 +64,11 @@ def on_message(client, userdata, msg):
             # Add a precise timestamp (when we received it)
             timestamp = time.time()
             
-            # Append to file immediately (flush so we don't lose data if power cuts)
-            with open(filename, "a", newline='') as f:
-                writer = csv.writer(f)
+            # Write to GLOBAL file handle
+            if current_file:
+                writer = csv.writer(current_file)
                 writer.writerow([timestamp] + row_data)
+                current_file.flush() # Ensure data is safe
                 
             # Print a dot to show activity without spamming
             print(".", end="", flush=True)
@@ -54,9 +80,12 @@ def on_message(client, userdata, msg):
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, 60)
 client.subscribe("hive/deposit")
+client.subscribe("hive/control/reset") # Listen for reset
 client.on_message = on_message
 
 try:
     client.loop_forever()
 except KeyboardInterrupt:
-    print(f"\nLog saved: {filename}")
+    if current_file:
+        current_file.close()
+    print(f"\nLog saved.")
