@@ -634,7 +634,8 @@ PLAYBACK_TEMPLATE = """
             padding: 5px; font-family: monospace;
         }
         #timeline { flex: 1; height: 20px; background: #111; cursor: pointer; }
-        #timeline-progress { height: 100%; background: #0f03; width: 0%; }
+        #timeline-progress { height: 100%; background: #0f03; width: 0%; transition: background 0.3s; }
+        #timeline-progress.simulated { background: #f803; }
         #timestamp { color: #888; font-size: 11px; min-width: 160px; }
         .no-csv { color: #666; font-style: italic; }
         .drone-label { position: absolute; color: white; font-weight: bold; font-size: 10px; text-shadow: 0 0 2px #000; pointer-events: none; }
@@ -668,6 +669,10 @@ PLAYBACK_TEMPLATE = """
             </div>
             <div class="controls" id="playback-controls">
                 <button id="play-btn" onclick="togglePlayback()" disabled>PLAY SESSION</button>
+                <select id="mode-select" onchange="setPlaybackMode()">
+                    <option value="simulate">SIMULATE</option>
+                    <option value="recorded">RECORDED</option>
+                </select>
                 <select id="speed-select" onchange="setSpeed()">
                     <option value="0.5">0.5x</option>
                     <option value="1" selected>1x</option>
@@ -678,6 +683,7 @@ PLAYBACK_TEMPLATE = """
                     <div id="timeline-progress"></div>
                 </div>
                 <span id="timestamp">No session loaded</span>
+                <span id="playback-badge" style="display:none; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-left: 10px;"></span>
             </div>
         </div>
     </div>
@@ -691,6 +697,9 @@ PLAYBACK_TEMPLATE = """
         let archives = [];
         let currentArchive = null;
         let flightData = null;
+        let simulatedData = null;
+        let playbackMode = 'simulate'; // 'simulate' or 'recorded'
+        let hasRecordedData = false;
         let isPlaying = false;
         let playbackSpeed = 1;
         let playbackIndex = 0;
@@ -724,17 +733,78 @@ PLAYBACK_TEMPLATE = """
 
         function renderArchiveList() {
             const list = document.getElementById('archive-list');
+
+            // Always show "LIVE STATE" option at top
+            let html = `
+                <div class="archive-item" onclick="loadLiveState()" id="archive-live" style="border-color:#0af;">
+                    <div style="color:#0af;">> CURRENT LIVE STATE</div>
+                    <div style="color:#666; font-size:11px; margin-top:4px;">Load current hive_state.json</div>
+                </div>
+            `;
+
             if (archives.length === 0) {
-                list.innerHTML = '<div style="color:#666;">No archived sessions found</div>';
-                return;
+                html += '<div style="color:#666; padding: 10px;">No archived sessions found.<br><br><span style="color:#888;">Click RESET HIVE on the live dashboard to create archives.</span></div>';
+            } else {
+                html += archives.map((a, i) => `
+                    <div class="archive-item" onclick="selectArchive(${i})" id="archive-${i}">
+                        <div style="color:#0f0;">> ${a.display_time}</div>
+                        <div style="color:#666; font-size:11px; margin-top:4px;">${a.filename}</div>
+                    </div>
+                `).join('');
             }
 
-            list.innerHTML = archives.map((a, i) => `
-                <div class="archive-item" onclick="selectArchive(${i})" id="archive-${i}">
-                    <div style="color:#0f0;">> ${a.display_time}</div>
-                    <div style="color:#666; font-size:11px; margin-top:4px;">${a.filename}</div>
-                </div>
-            `).join('');
+            list.innerHTML = html;
+        }
+
+        async function loadLiveState() {
+            console.log('loadLiveState called');
+            // Clear other selections
+            document.querySelectorAll('.archive-item').forEach(el => el.classList.remove('selected'));
+            document.getElementById('archive-live').classList.add('selected');
+
+            try {
+                const res = await fetch('/data');
+                currentArchive = await res.json();
+                console.log('Loaded currentArchive:', currentArchive);
+
+                // Update metadata
+                document.getElementById('meta-mood').innerText = currentArchive.mood || 'UNKNOWN';
+                document.getElementById('meta-mood').style.color = currentArchive.mood === 'FRENZY' ? '#ff0' : '#44f';
+                document.getElementById('meta-decay').innerText = currentArchive.decay_rate || '-';
+                document.getElementById('meta-mode').innerText = currentArchive.sim_mode || '-';
+                document.getElementById('meta-drones').innerText = Object.keys(currentArchive.drones || {}).length;
+                document.getElementById('meta-time').innerText = 'LIVE (now)';
+
+                // Render static snapshot
+                renderSnapshot();
+
+                // Enable play with simulation (no recorded data for live state)
+                flightData = null;
+                hasRecordedData = false;
+                document.getElementById('play-btn').disabled = false;
+                updatePlaybackUI();
+
+            } catch(e) {
+                console.error('Error loading live state:', e);
+
+                // Create empty state for simulation
+                currentArchive = {
+                    grid: Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)),
+                    ghost_grid: Array(gridSize).fill(null).map(() => Array(gridSize).fill(0)),
+                    drones: {},
+                    mood: 'FRENZY'
+                };
+
+                document.getElementById('meta-mood').innerText = 'SIMULATED';
+                document.getElementById('meta-drones').innerText = '0 (will generate)';
+                document.getElementById('meta-time').innerText = 'Empty Hive';
+
+                renderSnapshot();
+                flightData = null;
+                hasRecordedData = false;
+                document.getElementById('play-btn').disabled = false;
+                updatePlaybackUI();
+            }
         }
 
         async function selectArchive(index) {
@@ -768,9 +838,84 @@ PLAYBACK_TEMPLATE = """
             }
         }
 
+        function generateSimulatedData(drones, frameCount = 300) {
+            // Generate simulated movement based on archive drone positions
+            const data = [];
+            const positions = {};
+
+            // Initialize positions from archive
+            for (const [id, drone] of Object.entries(drones || {})) {
+                positions[id] = { x: drone.x, y: drone.y };
+            }
+
+            // If no drones in archive, create some virtual ones
+            if (Object.keys(positions).length === 0) {
+                for (let i = 0; i < 3; i++) {
+                    const id = `SIM-${i}`;
+                    positions[id] = {
+                        x: Math.floor(Math.random() * gridSize),
+                        y: Math.floor(Math.random() * gridSize)
+                    };
+                }
+            }
+
+            const baseTime = Date.now() / 1000;
+
+            // Generate frames with random walk movement
+            for (let frame = 0; frame < frameCount; frame++) {
+                const timestamp = baseTime + frame * 0.1;
+
+                for (const [id, pos] of Object.entries(positions)) {
+                    // Random walk: move -1, 0, or +1 in each direction
+                    pos.x += Math.floor(Math.random() * 3) - 1;
+                    pos.y += Math.floor(Math.random() * 3) - 1;
+
+                    // Clamp to grid bounds
+                    pos.x = Math.max(0, Math.min(gridSize - 1, pos.x));
+                    pos.y = Math.max(0, Math.min(gridSize - 1, pos.y));
+
+                    data.push({
+                        timestamp,
+                        drone_id: id,
+                        x: pos.x,
+                        y: pos.y,
+                        intensity: 50,
+                        rssi: -50
+                    });
+                }
+            }
+
+            return data;
+        }
+
+        function setPlaybackMode() {
+            const modeSelect = document.getElementById('mode-select');
+            playbackMode = modeSelect.value;
+            updatePlaybackUI();
+        }
+
+        function updatePlaybackUI() {
+            const modeSelect = document.getElementById('mode-select');
+            const timestampEl = document.getElementById('timestamp');
+            const recordedOption = modeSelect.querySelector('option[value="recorded"]');
+
+            if (hasRecordedData) {
+                recordedOption.disabled = false;
+                if (playbackMode === 'recorded') {
+                    timestampEl.innerText = `Flight data: ${flightData.length} points`;
+                } else {
+                    timestampEl.innerText = `Simulation ready (${Object.keys(currentArchive?.drones || {}).length} drones)`;
+                }
+            } else {
+                recordedOption.disabled = true;
+                modeSelect.value = 'simulate';
+                playbackMode = 'simulate';
+                timestampEl.innerHTML = '<span class="no-csv">No recorded data - using simulation</span>';
+            }
+        }
+
         async function checkFlightLog(timestamp) {
             const playBtn = document.getElementById('play-btn');
-            const timestampEl = document.getElementById('timestamp');
 
             try {
                 const res = await fetch('/api/flight_logs');
@@ -786,19 +931,19 @@ PLAYBACK_TEMPLATE = """
                     // Load the flight data
                     const dataRes = await fetch(`/api/flight_log/${matchingLog.filename}`);
                     flightData = await dataRes.json();
-
-                    playBtn.disabled = false;
-                    timestampEl.innerText = `Flight data: ${flightData.length} points`;
+                    hasRecordedData = true;
                 } else {
                     flightData = null;
-                    playBtn.disabled = true;
-                    timestampEl.innerHTML = '<span class="no-csv">No flight data available</span>';
+                    hasRecordedData = false;
                 }
             } catch(e) {
                 flightData = null;
-                playBtn.disabled = true;
-                timestampEl.innerHTML = '<span class="no-csv">No flight data available</span>';
+                hasRecordedData = false;
             }
+
+            // Always enable play button - we can simulate if no recorded data
+            playBtn.disabled = false;
+            updatePlaybackUI();
         }
 
         function renderSnapshot() {
@@ -892,13 +1037,20 @@ PLAYBACK_TEMPLATE = """
         function drawDrones(drones, positions = null) {
             overlays.innerHTML = '';
 
-            for (const [id, drone] of Object.entries(drones || {})) {
+            // Collect all drone IDs (from archive drones + any position overrides)
+            const allDroneIds = new Set([
+                ...Object.keys(drones || {}),
+                ...Object.keys(positions || {})
+            ]);
+
+            for (const id of allDroneIds) {
+                const drone = (drones || {})[id] || {};
                 const hue = stringToHue(id);
                 const color = `hsl(${hue}, 100%, 50%)`;
 
                 // Use provided positions or drone's stored position
-                const x = positions && positions[id] ? positions[id].x : drone.x;
-                const y = positions && positions[id] ? positions[id].y : drone.y;
+                const x = positions && positions[id] ? positions[id].x : (drone.x || 0);
+                const y = positions && positions[id] ? positions[id].y : (drone.y || 0);
 
                 // Draw label
                 const el = document.createElement('div');
@@ -929,7 +1081,43 @@ PLAYBACK_TEMPLATE = """
         }
 
         function startPlayback() {
-            if (!flightData || flightData.length === 0) return;
+            console.log('startPlayback called');
+            console.log('currentArchive:', currentArchive);
+            console.log('playbackMode:', playbackMode);
+
+            const badge = document.getElementById('playback-badge');
+            const timelineProgress = document.getElementById('timeline-progress');
+
+            // Get the data to use based on mode
+            let dataToUse;
+            if (playbackMode === 'recorded' && hasRecordedData && flightData) {
+                dataToUse = flightData;
+                badge.innerText = 'RECORDED';
+                badge.style.background = '#0a0';
+                badge.style.color = '#fff';
+                timelineProgress.classList.remove('simulated');
+            } else {
+                // Generate or use cached simulated data
+                console.log('Generating simulated data for drones:', currentArchive?.drones);
+                if (!simulatedData || simulatedData.length === 0) {
+                    simulatedData = generateSimulatedData(currentArchive?.drones || {});
+                }
+                console.log('Generated simulatedData length:', simulatedData?.length);
+                dataToUse = simulatedData;
+                badge.innerText = 'SIMULATED';
+                badge.style.background = '#f80';
+                badge.style.color = '#000';
+                timelineProgress.classList.add('simulated');
+            }
+
+            if (!dataToUse || dataToUse.length === 0) {
+                console.error('No playback data available');
+                return;
+            }
+
+            // Store active data for animation
+            window.activePlaybackData = dataToUse;
+            badge.style.display = 'inline';
 
             isPlaying = true;
             document.getElementById('play-btn').innerText = 'PAUSE';
@@ -941,10 +1129,15 @@ PLAYBACK_TEMPLATE = """
         function stopPlayback() {
             isPlaying = false;
             document.getElementById('play-btn').innerText = 'PLAY SESSION';
+            document.getElementById('playback-badge').style.display = 'none';
+            document.getElementById('timeline-progress').classList.remove('simulated');
             if (animationId) {
                 cancelAnimationFrame(animationId);
                 animationId = null;
             }
+            // Clear simulated data cache when stopping
+            simulatedData = null;
+            window.activePlaybackData = null;
             // Return to static snapshot
             renderSnapshot();
         }
@@ -954,12 +1147,13 @@ PLAYBACK_TEMPLATE = """
         }
 
         function seekTimeline(event) {
-            if (!flightData || flightData.length === 0) return;
+            const data = window.activePlaybackData;
+            if (!data || data.length === 0) return;
 
             const timeline = document.getElementById('timeline');
             const rect = timeline.getBoundingClientRect();
             const pct = (event.clientX - rect.left) / rect.width;
-            playbackIndex = Math.floor(pct * flightData.length);
+            playbackIndex = Math.floor(pct * data.length);
 
             if (!isPlaying) {
                 // Show single frame at seek position
@@ -970,6 +1164,9 @@ PLAYBACK_TEMPLATE = """
         function animate() {
             if (!isPlaying) return;
 
+            const data = window.activePlaybackData;
+            if (!data) return;
+
             const now = performance.now();
             const delta = now - lastFrameTime;
 
@@ -978,7 +1175,7 @@ PLAYBACK_TEMPLATE = """
                 lastFrameTime = now;
                 playbackIndex++;
 
-                if (playbackIndex >= flightData.length) {
+                if (playbackIndex >= data.length) {
                     stopPlayback();
                     return;
                 }
@@ -990,7 +1187,8 @@ PLAYBACK_TEMPLATE = """
         }
 
         function renderFrame(index) {
-            if (!flightData || !currentArchive) return;
+            const data = window.activePlaybackData;
+            if (!data || !currentArchive) return;
 
             // Clear and draw base map
             ctx.fillStyle = '#000';
@@ -1008,7 +1206,7 @@ PLAYBACK_TEMPLATE = """
             const startIdx = Math.max(0, index - trailLength);
 
             for (let i = startIdx; i <= index; i++) {
-                const point = flightData[i];
+                const point = data[i];
                 if (!point) continue;
 
                 const id = point.drone_id;
@@ -1040,13 +1238,13 @@ PLAYBACK_TEMPLATE = """
             drawDrones(currentArchive.drones, positions);
 
             // Update timeline and timestamp
-            const pct = (index / flightData.length) * 100;
+            const pct = (index / data.length) * 100;
             document.getElementById('timeline-progress').style.width = pct + '%';
 
-            const point = flightData[index];
+            const point = data[index];
             if (point) {
                 const date = new Date(point.timestamp * 1000);
-                document.getElementById('timestamp').innerText = date.toLocaleTimeString() + ` (${index}/${flightData.length})`;
+                document.getElementById('timestamp').innerText = date.toLocaleTimeString() + ` (${index}/${data.length})`;
             }
         }
 
