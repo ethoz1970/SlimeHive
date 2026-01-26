@@ -123,6 +123,11 @@ HTML_TEMPLATE = """
                 <option value="14400">4 Hours</option>
             </select>
         </span>
+        <span style="float:right; font-size: 14px; margin-left: 10px;">
+            <select id="drone-filter" style="background:#000; color:#0f0; border:1px solid #333; font-family:monospace; padding:2px;">
+                <option value="ALL">ALL DRONES</option>
+            </select>
+        </span>
         <span style="float:right; font-size: 14px; margin-left: 20px;">
             <button onclick="resetHive()" style="color:#f44; border:1px solid #f44; background:#000; cursor:pointer; font-weight:bold;">RESET HIVE</button>
         </span>
@@ -228,25 +233,72 @@ HTML_TEMPLATE = """
              try {
                 const res = await fetch(`/history_data?window=${window}`);
                 const history = await res.json();
+                updateDroneFilter(Object.keys(history));
                 drawHistoryTrails(history);
             } catch(e) {}
         }
+
+        function updateDroneFilter(droneIds) {
+            const select = document.getElementById('drone-filter');
+            const current = select.value;
+            
+            // Only update if count changed (simple heuristic to avoid DOM thrashing)
+            if (select.options.length === droneIds.length + 1) return;
+
+            select.innerHTML = '<option value="ALL">ALL DRONES</option>';
+            droneIds.sort().forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.innerText = id;
+                if (id === current) opt.selected = true;
+                select.appendChild(opt);
+            });
+        }
         
         function drawHistoryTrails(history) {
+            const filter = document.getElementById('drone-filter').value;
+            
             // Draw long trails
             for (const [id, points] of Object.entries(history)) {
                 if (points.length < 2) continue;
+                if (filter !== "ALL" && id !== filter) continue;
+                
+                const hue = stringToHue(id);
+                const color = `hsl(${hue}, 100%, 50%)`;
                 
                 ctx.beginPath();
-                ctx.strokeStyle = '#0f0'; // Default history color
-                ctx.globalAlpha = 0.3;
-                ctx.lineWidth = 1;
+                ctx.strokeStyle = color; 
+                ctx.globalAlpha = (filter === "ALL") ? 0.3 : 0.8; // Bright if single selected
+                ctx.lineWidth = (filter === "ALL") ? 1 : 2;
                 
-                ctx.moveTo(points[0][0] * scale + scale/2, (gridSize - 1 - points[0][1]) * scale + scale/2);
+                // Draw path
+                const startX = points[0][0] * scale + scale/2;
+                const startY = (gridSize - 1 - points[0][1]) * scale + scale/2;
+                
+                ctx.moveTo(startX, startY);
                 for (let i = 1; i < points.length; i++) {
                      ctx.lineTo(points[i][0] * scale + scale/2, (gridSize - 1 - points[i][1]) * scale + scale/2);
                 }
                 ctx.stroke();
+                
+                // Draw Start Marker (Circle)
+                ctx.beginPath();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.arc(startX, startY, 3, 0, 2 * Math.PI);
+                ctx.stroke();
+
+                // Draw End Marker (X)
+                const endX = points[points.length-1][0] * scale + scale/2;
+                const endY = (gridSize - 1 - points[points.length-1][1]) * scale + scale/2;
+                
+                ctx.beginPath();
+                ctx.moveTo(endX - 3, endY - 3);
+                ctx.lineTo(endX + 3, endY + 3);
+                ctx.moveTo(endX + 3, endY - 3);
+                ctx.lineTo(endX - 3, endY + 3);
+                ctx.stroke();
+                
                 ctx.globalAlpha = 1.0;
             }
         }
