@@ -113,15 +113,28 @@ HTML_TEMPLATE = """
 <head>
     <title>HIVE RESEARCH TERMINAL</title>
     <style>
-        body { 
-            background-color: #000; color: #0f0; 
-            font-family: 'Courier New', monospace; 
+        body {
+            background-color: #000; color: #0f0;
+            font-family: 'Courier New', monospace;
             margin: 0; padding: 20px;
             overflow: hidden;
         }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
-        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; height: 90vh; }
-        .panel { border: 1px solid #333; background: #050505; position: relative; }
+        .container { display: flex; gap: 0; height: 90vh; }
+        .panel { border: 1px solid #333; background: #050505; position: relative; overflow: hidden; }
+        .panel-left { width: 20%; min-width: 150px; max-width: 50%; }
+        .panel-right { flex: 1; }
+        .resizer {
+            width: 8px;
+            background: #222;
+            cursor: col-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        .resizer:hover, .resizer.dragging { background: #0f0; }
+        .resizer::after { content: "⋮"; color: #666; font-size: 16px; }
         .panel-header { background: #111; color: #aaa; padding: 5px; font-size: 12px; border-bottom: 1px solid #333; }
         img.feed { width: 100%; height: auto; display: block; opacity: 0.9; }
         #map-container { position: relative; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
@@ -165,13 +178,14 @@ HTML_TEMPLATE = """
         <span id="sun-status" style="float:right; font-size: 14px; color: #888;">SUN: SYNCING...</span>
     </h2>
     <div class="container">
-        <div class="panel">
+        <div class="panel panel-left" id="panel-left">
             <div class="panel-header">Optical Sensor (Live Analysis)</div>
             <img class="feed" src="/video_feed">
             <div class="panel-header" style="border-top: 1px solid #333; margin-top: 0;">Drone Registry</div>
             <div id="drone-registry" style="padding: 10px; font-size: 12px; height: 150px; overflow-y: auto;"></div>
         </div>
-        <div class="panel">
+        <div class="resizer" id="resizer"></div>
+        <div class="panel panel-right">
             <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
             <div id="map-container">
                 <canvas id="hiveMap" width="800" height="800"></canvas>
@@ -545,6 +559,36 @@ HTML_TEMPLATE = """
             });
         }
         setInterval(fetchState, 100);
+
+        // --- RESIZER FUNCTIONALITY ---
+        const resizer = document.getElementById('resizer');
+        const panelLeft = document.getElementById('panel-left');
+        let isResizing = false;
+
+        resizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            resizer.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const containerRect = document.querySelector('.container').getBoundingClientRect();
+            let newWidth = e.clientX - containerRect.left;
+            // Clamp between min and max
+            newWidth = Math.max(150, Math.min(newWidth, containerRect.width * 0.5));
+            panelLeft.style.width = newWidth + 'px';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizer.classList.remove('dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
     </script>
 </body>
 </html>
