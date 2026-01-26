@@ -1,5 +1,7 @@
 bleak
 paho-mqtt
 flask
+flask-cors
+requests
 numpy
 pillow
