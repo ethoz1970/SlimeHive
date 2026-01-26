@@ -394,7 +394,12 @@ HTML_TEMPLATE = """
             const now = Date.now() / 1000;
             let activeCount = 0;
             
+            const filter = document.getElementById('drone-filter').value;
+            
             for (const [id, drone] of Object.entries(drones)) {
+                // FILTER LOGIC
+                if (filter !== "ALL" && id !== filter) continue;
+
                 // ... (Logic to count active/warning/red) ...
                 const diff = now - drone.last_seen;
                 

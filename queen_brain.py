@@ -104,9 +104,12 @@ def reset_hive():
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         backup_path = os.path.join(snapshot_dir, f"hive_state_ARCHIVE_{timestamp}.json")
         
+        print(f"DEBUG: Looking for source file at: {HISTORY_FILE}")
         if os.path.exists(HISTORY_FILE):
             shutil.copy2(HISTORY_FILE, backup_path)
             print(f"Archived state to: {backup_path}")
+        else:
+            print(f"DEBUG: Source file NOT FOUND! Cannot archive.")
     except Exception as e:
         print(f"Archive Error: {e}")
     
