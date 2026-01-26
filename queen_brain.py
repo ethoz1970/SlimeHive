@@ -24,11 +24,14 @@ SENSOR_POSITIONS = {
 VIRTUAL_PREFIX = "V-"
 
 # --- BIOLOGICAL PARAMETERS ---
-# --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
 DECAY_RATE = 0.95  # Default to "Active/Day"
 CURRENT_MOOD = "WAITING"
 SIMULATION_MODE = "RANDOM" # Options: "RANDOM", "FIND_QUEEN"
+
+# Virtual Drone Speed: Probability of moving each tick (0.0 to 1.0)
+# 1.0 = move every tick (10/sec), 0.3 = move ~3/sec, 0.1 = move ~1/sec
+VIRTUAL_DRONE_MOVE_CHANCE = 0.25
 
 # --- STATE VARIABLES ---
 # The Pheromone Grid (Float 0.0 - 255.0)
@@ -301,9 +304,13 @@ def physics_loop():
         virtual_ids = [d for d in active_drones if d.startswith(VIRTUAL_PREFIX)]
         for v_id in virtual_ids:
             drone = active_drones[v_id]
-            
+
+            # Speed control: skip movement most ticks
+            if random.random() > VIRTUAL_DRONE_MOVE_CHANCE:
+                continue
+
             dx, dy = 0, 0
-            
+
             # --- BEHAVIOR TREE ---
             if SIMULATION_MODE == "FIND_QUEEN":
                 # Move towards (25, 25)
