@@ -11,6 +11,14 @@ import glob
 import csv
 import os  # The new eye
 import threading
+import logging
+
+# Silence the Flask access logs for /data polling
+log = logging.getLogger('werkzeug')
+class FilterDataLogs(logging.Filter):
+    def filter(self, record):
+        return "/data" not in record.getMessage() and "/video_feed" not in record.getMessage()
+log.addFilter(FilterDataLogs())
 
 app = Flask(__name__)
 
