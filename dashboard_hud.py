@@ -608,7 +608,7 @@ PLAYBACK_TEMPLATE = """
         }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
         .container { display: grid; grid-template-columns: 280px 1fr; gap: 20px; height: 85vh; }
-        .panel { border: 1px solid #333; background: #050505; }
+        .panel { border: 1px solid #333; background: #050505; display: flex; flex-direction: column; overflow: hidden; }
         .panel-header { background: #111; color: #aaa; padding: 8px; font-size: 12px; border-bottom: 1px solid #333; }
         .archive-list { height: calc(100% - 250px); overflow-y: auto; padding: 10px; }
         .archive-item {
@@ -620,9 +620,9 @@ PLAYBACK_TEMPLATE = """
         .metadata { padding: 10px; font-size: 12px; border-top: 1px solid #333; }
         .metadata-row { margin: 4px 0; }
         .metadata-label { color: #888; }
-        #map-container { position: relative; display: flex; justify-content: center; align-items: center; height: calc(100% - 80px); }
+        #map-container { position: relative; display: flex; justify-content: center; align-items: center; flex: 1; min-height: 0; overflow: hidden; }
         canvas { border: 1px solid #222; max-width: 100%; max-height: 100%; }
-        .controls { padding: 10px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #333; }
+        .controls { padding: 10px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #333; flex-shrink: 0; }
         .controls button {
             background: #111; color: #0f0; border: 1px solid #333;
             padding: 5px 15px; cursor: pointer; font-family: monospace;
