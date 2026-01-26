@@ -377,7 +377,7 @@ HTML_TEMPLATE = """
         }
 
         function drawDrones(drones, historyMode=false) {
-            updateDroneFilter(Object.keys(drones)); # Fix Filter in Live Mode
+            updateDroneFilter(Object.keys(drones)); // Fix Filter in Live Mode
             overlays.innerHTML = ''; 
             const now = Date.now() / 1000;
             let activeCount = 0;
