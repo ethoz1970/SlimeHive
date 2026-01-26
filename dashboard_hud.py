@@ -20,6 +20,9 @@ QUEEN_IP = os.environ.get('QUEEN_IP', None)
 QUEEN_API_URL = f"http://{QUEEN_IP}:5001" if QUEEN_IP else None
 IS_REMOTE_MODE = QUEEN_IP is not None
 
+# Dashboard port (default 5000, but macOS AirPlay uses 5000)
+DASHBOARD_PORT = int(os.environ.get('DASHBOARD_PORT', 5050 if IS_REMOTE_MODE else 5000))
+
 # Silence the Flask access logs for /data polling
 log = logging.getLogger('werkzeug')
 class FilterDataLogs(logging.Filter):
@@ -1333,9 +1336,9 @@ if __name__ == '__main__':
         t.daemon = True
         t.start()
 
-    print("/// DASHBOARD SERVER STARTING ON PORT 5000 ///")
+    print(f"/// DASHBOARD SERVER STARTING ON PORT {DASHBOARD_PORT} ///")
     try:
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+        app.run(host='0.0.0.0', port=DASHBOARD_PORT, debug=False, threaded=True)
     except Exception as e:
         print(f"Flask Error: {e}")
     
