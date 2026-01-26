@@ -5,9 +5,9 @@ import machine
 import random
 
 # --- CONFIGURATION (THE QUEEN BEE) ---
-GRID_SIZE = 50
-current_x = 25
-current_y = 25
+GRID_SIZE = 100
+current_x = GRID_SIZE // 2
+current_y = GRID_SIZE // 2
 led = machine.Pin("LED", machine.Pin.OUT)
 
 # Initialize Bluetooth

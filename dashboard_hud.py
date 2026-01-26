@@ -185,8 +185,8 @@ HTML_TEMPLATE = """
         const overlays = document.getElementById('overlays');
         const droneCounter = document.getElementById('drone-counter');
         const timeFilter = document.getElementById('time-filter');
-        const gridSize = 50;
-        const scale = 800 / gridSize; 
+        let gridSize = 100;  // Default, updated from data
+        let scale = 800 / gridSize; 
 
         function stringToHue(str) {
             let hash = 0;
@@ -208,13 +208,19 @@ HTML_TEMPLATE = """
                 // If filtering history, don't spam the status endpoint for map data
                 // checking value...
                 const window = timeFilter.value;
-                
+
                 // 1. Always get live mood/count data (lightweight)
                 const response = await fetch('/data');
                 const data = await response.json();
-                
+
+                // Update grid size from actual data
+                if (data.grid && data.grid.length > 0) {
+                    gridSize = data.grid.length;
+                    scale = 800 / gridSize;
+                }
+
                 updateSunStatus(data.mood);
-                
+
                 // 2. Decide what to draw
                 drawMap(data.grid, data.ghost_grid);
                 drawQueen();
@@ -635,8 +641,8 @@ PLAYBACK_TEMPLATE = """
         const canvas = document.getElementById('hiveMap');
         const ctx = canvas.getContext('2d');
         const overlays = document.getElementById('overlays');
-        const gridSize = 50;
-        const scale = 800 / gridSize;
+        let gridSize = 100;  // Default, updated from archive data
+        let scale = 800 / gridSize;
 
         let archives = [];
         let currentArchive = null;
@@ -753,6 +759,12 @@ PLAYBACK_TEMPLATE = """
 
         function renderSnapshot() {
             if (!currentArchive) return;
+
+            // Update grid size from archive data
+            if (currentArchive.grid && currentArchive.grid.length > 0) {
+                gridSize = currentArchive.grid.length;
+                scale = 800 / gridSize;
+            }
 
             // Clear canvas
             ctx.fillStyle = '#000';

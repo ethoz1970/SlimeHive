@@ -10,7 +10,7 @@ from datetime import datetime
 import os
 
 # --- CONFIGURATION ---
-GRID_SIZE = 50
+GRID_SIZE = 100  # Grid dimensions (100x100 = 10,000 cells)
 MQTT_BROKER = "localhost"  # The Queen is the Broker
 
 # Ensure we write to the same directory as the script
@@ -18,8 +18,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(BASE_DIR, "hive_state.json")
 
 SENSOR_POSITIONS = {
-    "QUEEN": (25, 25),
-    "SENTINEL": (10, 10)
+    "QUEEN": (GRID_SIZE // 2, GRID_SIZE // 2),  # Center of grid
+    "SENTINEL": (GRID_SIZE // 5, GRID_SIZE // 5)  # Corner position
 }
 VIRTUAL_PREFIX = "V-"
 
@@ -314,7 +314,7 @@ def physics_loop():
             # --- BEHAVIOR TREE ---
             if SIMULATION_MODE == "FIND_QUEEN":
                 # Move towards (25, 25)
-                target_x, target_y = 25, 25
+                target_x, target_y = GRID_SIZE // 2, GRID_SIZE // 2
                 
                 # Vector to target
                 vx = target_x - drone["x"]
