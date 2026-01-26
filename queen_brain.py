@@ -93,6 +93,7 @@ def adjust_virtual_swarm(target_count):
 def reset_hive():
     global hive_grid, ghost_grid, active_drones, rssi_buffer
     print("/// RESETTING HIVE MEMORY ///")
+    print(f"DEBUG: Attempting to archive to {os.path.join(BASE_DIR, 'snapshots')}")
     
     # 1. Archive Current State
     try:

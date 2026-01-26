@@ -223,13 +223,11 @@ HTML_TEMPLATE = """
             await fetch(`/set_virtual_swarm?count=${count}`);
         }
         
-        async function resetHive() {
             if (confirm("WARNING: This will wipe all hive memory and learned trails. Proceed?")) {
-                await fetch('/reset_hive');
+                fetch('/reset_hive'); // Non-blocking
                 // Force Reload to clear frontend state and reconnect to new log
                 setTimeout(() => location.reload(), 1000);
             }
-        }
 
         async function fetchHistory(window) {
              try {
