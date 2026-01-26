@@ -226,6 +226,8 @@ HTML_TEMPLATE = """
         async function resetHive() {
             if (confirm("WARNING: This will wipe all hive memory and learned trails. Proceed?")) {
                 await fetch('/reset_hive');
+                // Force Reload to clear frontend state and reconnect to new log
+                setTimeout(() => location.reload(), 1000);
             }
         }
 
@@ -376,6 +378,8 @@ HTML_TEMPLATE = """
             ctx.fillText("S", px - 3.5, py + 6);
         }
 
+        let tickCounter = 0;
+
         function drawDrones(drones, historyMode=false) {
             updateDroneFilter(Object.keys(drones)); // Fix Filter in Live Mode
             overlays.innerHTML = ''; 
@@ -442,7 +446,12 @@ HTML_TEMPLATE = """
                 droneCounter.innerText = activeCount;
                 droneCounter.style.color = activeCount > 0 ? '#0f0' : '#f00';
             }
-            updateDroneList(drones);
+            
+            // FLICKER FIX: Update List only every 10 ticks (1 sec)
+            tickCounter++;
+            if (tickCounter % 10 === 0) {
+                updateDroneList(drones);
+            }
         }
 
         function updateDroneList(drones) {
