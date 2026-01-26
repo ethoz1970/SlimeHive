@@ -438,36 +438,56 @@ HTML_TEMPLATE = """
                 }
             }
             
-            droneCounter.innerText = activeCount;
-            droneCounter.style.color = activeCount > 0 ? '#0f0' : '#f00';
+            if (activeCount !== parseInt(droneCounter.innerText)) {
+                droneCounter.innerText = activeCount;
+                droneCounter.style.color = activeCount > 0 ? '#0f0' : '#f00';
+            }
             updateDroneList(drones);
         }
 
         function updateDroneList(drones) {
             const list = document.getElementById('drone-registry');
-            list.innerHTML = '';
+            // Optimizing this list is harder because times change every tick.
+            // Leaving as is for now, but could be optimized if needed.
+            list.innerHTML = ''; 
+            // ... (rest of function)
             const now = Date.now() / 1000;
-            
-            // Sort by ID for stability
             const sortedIds = Object.keys(drones).sort();
             
             for (const id of sortedIds) {
                 const drone = drones[id];
                 const diff = now - drone.last_seen;
-                let color = '#f00'; // > 30s
-                
-                if (diff < 10) color = '#0f0'; // < 10s
-                else if (diff <= 30) color = '#ff0'; // 10-30s
-                
-                const item = document.createElement('div');
+                // ... (rebuild items)
+                 const item = document.createElement('div');
                 item.style.marginBottom = '4px';
-                // item.style.color = color; // Use the unique color!
                 const hue = stringToHue(id);
                 item.style.color = `hsl(${hue}, 100%, 60%)`;
-                
                 item.innerText = `> [${id}] RSSI:${drone.rssi}dB (${Math.round(diff)}s ago)`;
                 list.appendChild(item);
             }
+        }
+        
+        let previousDroneListJson = "";
+
+        function updateDroneFilter(droneIds) {
+            const select = document.getElementById('drone-filter');
+            droneIds.sort();
+            const currentJson = JSON.stringify(droneIds);
+            
+            // DEBOUNCE: Only rebuild if the LIST CONTENT actually changed
+            if (currentJson === previousDroneListJson) return;
+            previousDroneListJson = currentJson;
+
+            const currentSelection = select.value;
+            select.innerHTML = '<option value="ALL">ALL DRONES</option>';
+            
+            droneIds.forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.innerText = id;
+                if (id === currentSelection) opt.selected = true;
+                select.appendChild(opt);
+            });
         }
         setInterval(fetchState, 100);
     </script>
@@ -557,4 +577,4 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+
