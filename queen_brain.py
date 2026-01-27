@@ -18,10 +18,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(BASE_DIR, "hive_state.json")
 
 SENSOR_POSITIONS = {
-    "QUEEN": (GRID_SIZE // 2, GRID_SIZE // 2),  # Center of grid
-    "SENTINEL": (GRID_SIZE // 5, GRID_SIZE // 5)  # Corner position
+    "QUEEN": (10, 10),      # Bottom-left corner (with margin)
+    "SENTINEL": (90, 90)    # Top-right corner (with margin)
 }
 VIRTUAL_PREFIX = "V-"
+
+# --- OPERATIONAL BOUNDARY ---
+# Drones must stay within the rectangle between Queen and Sentinel
+# 10-unit margin on all sides prevents drones from hitting grid edges
+BOUNDARY_MIN_X = 10
+BOUNDARY_MIN_Y = 10
+BOUNDARY_MAX_X = 90
+BOUNDARY_MAX_Y = 90
 
 # --- BIOLOGICAL PARAMETERS ---
 # Decay Rate: How fast pheromones evaporate (0.0 to 1.0)
@@ -31,7 +39,7 @@ SIMULATION_MODE = "RANDOM" # Options: "RANDOM", "FIND_QUEEN"
 
 # Virtual Drone Speed: Probability of moving each tick (0.0 to 1.0)
 # 1.0 = move every tick (10/sec), 0.3 = move ~3/sec, 0.1 = move ~1/sec
-VIRTUAL_DRONE_MOVE_CHANCE = 0.25
+VIRTUAL_DRONE_MOVE_CHANCE = 1.0
 
 # --- STATE VARIABLES ---
 # The Pheromone Grid (Float 0.0 - 255.0)
@@ -74,11 +82,11 @@ def adjust_virtual_swarm(target_count):
             while f"{VIRTUAL_PREFIX}{vid:02d}" in active_drones:
                 vid += 1
             new_id = f"{VIRTUAL_PREFIX}{vid:02d}"
-            
-            # Spawn at random location
+
+            # Spawn at random location within operational boundary
             active_drones[new_id] = {
-                "x": random.randint(0, GRID_SIZE-1),
-                "y": random.randint(0, GRID_SIZE-1),
+                "x": random.randint(BOUNDARY_MIN_X, BOUNDARY_MAX_X),
+                "y": random.randint(BOUNDARY_MIN_Y, BOUNDARY_MAX_Y),
                 "rssi": -42, # The Answer
                 "last_seen": time.time(),
                 "trail": []
@@ -313,8 +321,8 @@ def physics_loop():
 
             # --- BEHAVIOR TREE ---
             if SIMULATION_MODE == "FIND_QUEEN":
-                # Move towards center (Queen position)
-                target_x, target_y = GRID_SIZE // 2, GRID_SIZE // 2
+                # Move towards Queen position (bottom-left corner)
+                target_x, target_y = SENSOR_POSITIONS["QUEEN"]
 
                 # Vector to target
                 vx = target_x - drone["x"]
@@ -331,23 +339,29 @@ def physics_loop():
                     dy = random.choice([-1, 0, 1])
 
             elif SIMULATION_MODE == "PATROL":
-                # Patrol around the perimeter of the grid
+                # Patrol around the perimeter of the operational boundary
                 x, y = drone["x"], drone["y"]
-                margin = 10  # Distance from edge for patrol path
+                margin = 2  # Distance from boundary edge for patrol path
 
-                # Determine which edge we're closest to and move clockwise
-                if y <= margin and x < GRID_SIZE - margin:
-                    dx, dy = 1, 0  # Top edge: move right
-                elif x >= GRID_SIZE - margin and y < GRID_SIZE - margin:
-                    dx, dy = 0, 1  # Right edge: move down
-                elif y >= GRID_SIZE - margin and x > margin:
-                    dx, dy = -1, 0  # Bottom edge: move left
-                elif x <= margin and y > margin:
-                    dx, dy = 0, -1  # Left edge: move up
+                # Determine which edge of boundary we're closest to and move clockwise
+                at_left = x <= BOUNDARY_MIN_X + margin
+                at_right = x >= BOUNDARY_MAX_X - margin
+                at_bottom = y <= BOUNDARY_MIN_Y + margin
+                at_top = y >= BOUNDARY_MAX_Y - margin
+
+                if at_bottom and not at_right:
+                    dx, dy = 1, 0  # Bottom edge: move right
+                elif at_right and not at_top:
+                    dx, dy = 0, 1  # Right edge: move up
+                elif at_top and not at_left:
+                    dx, dy = -1, 0  # Top edge: move left
+                elif at_left and not at_bottom:
+                    dx, dy = 0, -1  # Left edge: move down
                 else:
-                    # Not on perimeter, move toward nearest edge
-                    dx = 1 if x < GRID_SIZE // 2 else -1
-                    dy = 0
+                    # Not on perimeter, move toward nearest boundary edge
+                    center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
+                    dx = -1 if x > center_x else 1
+                    dy = -1  # Head toward bottom edge
 
                 # Add slight randomness
                 if random.random() < 0.2:
@@ -385,8 +399,9 @@ def physics_loop():
                     dy = random.choice([-1, 0, 1])
 
             elif SIMULATION_MODE == "SCATTER":
-                # Scatter: move away from center
-                center_x, center_y = GRID_SIZE // 2, GRID_SIZE // 2
+                # Scatter: move away from boundary center toward edges
+                center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
+                center_y = (BOUNDARY_MIN_Y + BOUNDARY_MAX_Y) // 2
                 vx = drone["x"] - center_x
                 vy = drone["y"] - center_y
 
@@ -400,17 +415,17 @@ def physics_loop():
                     dy = random.choice([-1, 0, 1])
 
             elif SIMULATION_MODE == "TRAIL_FOLLOW":
-                # Follow pheromone trails in the ghost grid
+                # Follow pheromone trails in the ghost grid (within boundary)
                 x, y = drone["x"], drone["y"]
                 best_dx, best_dy = 0, 0
                 best_pheromone = 0
 
-                # Check all 8 neighbors + current
+                # Check all 8 neighbors + current (only within boundary)
                 for check_dx in [-1, 0, 1]:
                     for check_dy in [-1, 0, 1]:
                         nx = x + check_dx
                         ny = y + check_dy
-                        if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                        if BOUNDARY_MIN_X <= nx <= BOUNDARY_MAX_X and BOUNDARY_MIN_Y <= ny <= BOUNDARY_MAX_Y:
                             p = ghost_grid[nx][ny]
                             # Add randomness to break ties and explore
                             p += random.random() * 5
@@ -429,8 +444,9 @@ def physics_loop():
                 dx = random.choice([-1, 0, 1])
                 dy = random.choice([-1, 0, 1])
             
-            new_x = int(max(0, min(GRID_SIZE-1, drone["x"] + dx)))
-            new_y = int(max(0, min(GRID_SIZE-1, drone["y"] + dy)))
+            # Constrain to operational boundary
+            new_x = int(max(BOUNDARY_MIN_X, min(BOUNDARY_MAX_X, drone["x"] + dx)))
+            new_y = int(max(BOUNDARY_MIN_Y, min(BOUNDARY_MAX_Y, drone["y"] + dy)))
             
             # Update Position
             drone["x"] = new_x
@@ -461,7 +477,13 @@ def physics_loop():
             "drones": active_drones,
             "mood": CURRENT_MOOD,
             "decay_rate": DECAY_RATE,
-            "sim_mode": SIMULATION_MODE
+            "sim_mode": SIMULATION_MODE,
+            "boundary": {
+                "min_x": BOUNDARY_MIN_X,
+                "min_y": BOUNDARY_MIN_Y,
+                "max_x": BOUNDARY_MAX_X,
+                "max_y": BOUNDARY_MAX_Y
+            }
         }
         
         try:

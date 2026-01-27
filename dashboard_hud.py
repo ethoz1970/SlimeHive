@@ -241,6 +241,7 @@ HTML_TEMPLATE = """
 
                 // 2. Decide what to draw
                 drawMap(data.grid, data.ghost_grid);
+                drawBoundary(data.boundary);
                 drawQueen();
                 drawSentinel();
                 
@@ -389,9 +390,9 @@ HTML_TEMPLATE = """
         }
 
         function drawQueen() {
-            // The Queen sits at the center
-            const x = gridSize / 2;
-            const y = gridSize / 2;
+            // The Queen sits at bottom-left corner (with margin)
+            const x = 10;
+            const y = 10;
             const px = x * scale;
             const py = (gridSize - 1 - y) * scale;
 
@@ -412,9 +413,9 @@ HTML_TEMPLATE = """
         }
 
         function drawSentinel() {
-            // The Sentinel sits at 10, 10
-            const x = 10;
-            const y = 10;
+            // The Sentinel sits at top-right corner (with margin)
+            const x = 90;
+            const y = 90;
             const px = x * scale;
             const py = (gridSize - 1 - y) * scale;
 
@@ -431,6 +432,30 @@ HTML_TEMPLATE = """
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 10px monospace';
             ctx.fillText("S", px - 3.5, py + 6);
+        }
+
+        function drawBoundary(boundary) {
+            // Draw operational boundary rectangle
+            if (!boundary) {
+                // Default boundary if not provided
+                boundary = { min_x: 10, min_y: 10, max_x: 90, max_y: 90 };
+            }
+
+            const x1 = boundary.min_x * scale;
+            const y1 = (gridSize - 1 - boundary.max_y) * scale;
+            const width = (boundary.max_x - boundary.min_x) * scale;
+            const height = (boundary.max_y - boundary.min_y) * scale;
+
+            // Draw rectangle outline
+            ctx.strokeStyle = '#0f0';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(x1, y1, width, height);
+            ctx.setLineDash([]);
+
+            // Add subtle fill
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.05)';
+            ctx.fillRect(x1, y1, width, height);
         }
 
         let tickCounter = 0;
@@ -967,6 +992,9 @@ PLAYBACK_TEMPLATE = """
             // Draw heat map
             drawMap(currentArchive.grid, currentArchive.ghost_grid);
 
+            // Draw boundary
+            drawBoundary(currentArchive.boundary);
+
             // Draw queen
             drawQueen();
 
@@ -1001,8 +1029,8 @@ PLAYBACK_TEMPLATE = """
         }
 
         function drawQueen() {
-            const x = gridSize / 2;
-            const y = gridSize / 2;
+            const x = 10;
+            const y = 10;
             const px = x * scale;
             const py = (gridSize - 1 - y) * scale;
 
@@ -1021,8 +1049,8 @@ PLAYBACK_TEMPLATE = """
         }
 
         function drawSentinel() {
-            const x = 10;
-            const y = 10;
+            const x = 90;
+            const y = 90;
             const px = x * scale;
             const py = (gridSize - 1 - y) * scale;
 
@@ -1037,6 +1065,27 @@ PLAYBACK_TEMPLATE = """
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 10px monospace';
             ctx.fillText("S", px - 3.5, py + 6);
+        }
+
+        function drawBoundary(boundary) {
+            // Draw operational boundary rectangle
+            if (!boundary) {
+                boundary = { min_x: 10, min_y: 10, max_x: 90, max_y: 90 };
+            }
+
+            const x1 = boundary.min_x * scale;
+            const y1 = (gridSize - 1 - boundary.max_y) * scale;
+            const width = (boundary.max_x - boundary.min_x) * scale;
+            const height = (boundary.max_y - boundary.min_y) * scale;
+
+            ctx.strokeStyle = '#0f0';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(x1, y1, width, height);
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.05)';
+            ctx.fillRect(x1, y1, width, height);
         }
 
         function drawDrones(drones, positions = null) {
@@ -1199,6 +1248,7 @@ PLAYBACK_TEMPLATE = """
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             drawMap(currentArchive.grid, currentArchive.ghost_grid);
+            drawBoundary(currentArchive.boundary);
             drawQueen();
             drawSentinel();
 
