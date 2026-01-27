@@ -447,14 +447,14 @@ HTML_TEMPLATE = """
             const height = (boundary.max_y - boundary.min_y) * scale;
 
             // Draw rectangle outline
-            ctx.strokeStyle = '#0f0';
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
             ctx.setLineDash([5, 5]);
             ctx.strokeRect(x1, y1, width, height);
             ctx.setLineDash([]);
 
             // Add subtle fill
-            ctx.fillStyle = 'rgba(0, 255, 0, 0.05)';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
             ctx.fillRect(x1, y1, width, height);
         }
 
