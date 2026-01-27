@@ -623,6 +623,29 @@ def api_get_archive(filename):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@api_app.route('/api/archive/<filename>', methods=['DELETE'])
+def api_delete_archive(filename):
+    """Delete an archived JSON snapshot"""
+    try:
+        pattern = re.compile(r'^hive_state_ARCHIVE_\d{4}-\d{2}-\d{2}_\d{6}\.json$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        file_path = os.path.join(BASE_DIR, "snapshots", filename)
+        snapshots_dir = os.path.join(BASE_DIR, "snapshots")
+
+        if not os.path.abspath(file_path).startswith(os.path.abspath(snapshots_dir)):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Archive not found'}), 404
+
+        os.remove(file_path)
+        return jsonify({'success': True, 'message': f'Deleted {filename}'})
+    except Exception as e:
+        print(f"Archive Delete Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @api_app.route('/api/flight_logs')
 def api_list_flight_logs():
     """List available flight log CSV files"""
