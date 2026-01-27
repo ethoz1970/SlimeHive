@@ -96,14 +96,23 @@ def camera_loop():
 
 def gen_frames():
     global latest_frame
+    # Create a black placeholder image for when there's no camera
+    placeholder_frame = None
+    try:
+        img = Image.new('RGB', (320, 240), color=(0, 0, 0))
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG')
+        placeholder_frame = buffer.getvalue()
+    except:
+        pass
+
     while True:
         if latest_frame:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
-        else:
-            # Return a placeholder frame in remote mode
+        elif placeholder_frame:
             yield (b'--frame\r\n'
-                   b'Content-Type: text/plain\r\n\r\nNo camera feed\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + placeholder_frame + b'\r\n')
         time.sleep(0.1)
 
 

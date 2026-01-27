@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HIVE RESEARCH TERMINAL</title>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/live.css">
+</head>
+<body>
+    <h2>
+        /// HIVE MIND: RESEARCH TERMINAL ///
+        <a href="/playback" class="playback-link">[PLAYBACK]</a>
+        <span class="header-controls">
+            <span class="header-control">
+                <label>SIMULATION:</label>
+                <select id="mode-select" onchange="setMode()">
+                    <option value="RANDOM" selected>RANDOM WALK</option>
+                    <option value="FIND_QUEEN">FIND THE QUEEN</option>
+                    <option value="PATROL">PATROL PERIMETER</option>
+                    <option value="SWARM">SWARM/FLOCK</option>
+                    <option value="SCATTER">SCATTER</option>
+                    <option value="TRAIL_FOLLOW">FOLLOW TRAILS</option>
+                </select>
+            </span>
+            <span class="header-control">
+                <label>V-DRONES:</label>
+                <input type="number" id="v-count" value="0" min="0" max="50">
+                <button onclick="setVirtualSwarm()">SET</button>
+            </span>
+            <span class="header-control">
+                <select id="time-filter">
+                    <option value="live">LIVE (10s)</option>
+                    <option value="60">1 Minute</option>
+                    <option value="600">10 Minutes</option>
+                    <option value="3600">1 Hour</option>
+                    <option value="14400">4 Hours</option>
+                </select>
+            </span>
+            <span class="header-control">
+                <select id="drone-filter">
+                    <option value="ALL">ALL DRONES</option>
+                </select>
+            </span>
+            <span class="header-control">
+                <button id="reset-btn" onclick="resetHive()">RESET HIVE</button>
+            </span>
+            <span id="sun-status">SUN: SYNCING...</span>
+        </span>
+    </h2>
+    <div class="container">
+        <div class="panel panel-left" id="panel-left">
+            <div class="panel-header">Optical Sensor (Live Analysis)</div>
+            <img class="feed" src="/video_feed">
+            <div class="panel-header" style="border-top: 1px solid #111; margin-top: 0;">Drone Registry</div>
+            <div id="drone-registry"></div>
+        </div>
+        <div class="resizer" id="resizer"></div>
+        <div class="panel panel-right">
+            <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
+            <div id="map-container">
+                <canvas id="hiveMap" width="800" height="800"></canvas>
+                <div id="overlays"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/hive-core.js"></script>
+    <script src="/static/js/live.js"></script>
+</body>
+</html>

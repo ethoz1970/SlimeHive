@@ -153,6 +153,32 @@ def get_archive(filename):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/archive/<filename>', methods=['DELETE'])
+def delete_archive(filename):
+    """Delete an archived JSON snapshot"""
+    try:
+        # Security: Validate filename pattern to prevent path traversal
+        pattern = re.compile(r'^hive_state_ARCHIVE_\d{4}-\d{2}-\d{2}_\d{6}\.json$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        file_path = os.path.join(BASE_DIR, "snapshots", filename)
+
+        # Additional security check
+        if not os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(BASE_DIR, "snapshots"))):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Archive not found'}), 404
+
+        os.remove(file_path)
+        return jsonify({'success': True, 'message': f'Deleted {filename}'})
+
+    except Exception as e:
+        print(f"Queen API Archive Delete Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/flight_logs')
 def list_flight_logs():
     """List available flight log CSV files"""

@@ -33,6 +33,9 @@ async function fetchState() {
 
         updateSunStatus(data.mood);
 
+        // Clear canvas before drawing
+        clearCanvas(ctx, canvas);
+
         // Draw the map layers
         drawMap(ctx, data.grid, data.ghost_grid);
         drawBoundary(ctx, data.boundary);
@@ -216,14 +219,10 @@ function drawDrones(drones, historyMode = false) {
 
         const color = `hsla(${hue}, 100%, ${lightness}%, ${alpha})`;
 
-        // Draw position dot
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(drone.x * scale + scale / 2, (gridSize - 1 - drone.y) * scale + scale / 2, 8, 0, 2 * Math.PI);
-        ctx.fill();
-        ctx.stroke();
+        // Draw fuzzy pheromone-like drone
+        const canvasX = drone.x * scale + scale / 2;
+        const canvasY = (gridSize - 1 - drone.y) * scale + scale / 2;
+        drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
 
         // Draw live trail (skip in history mode)
         if (!historyMode && drone.trail && drone.trail.length > 1) {

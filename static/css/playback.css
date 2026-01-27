@@ -6,6 +6,7 @@
     grid-template-columns: 280px 1fr;
     gap: 20px;
     height: calc(100vh - 100px);
+    background: #000;
 }
 
 .panel {
@@ -19,21 +20,22 @@
 
 /* Archive List */
 .archive-list {
-    height: calc(100% - 250px);
+    flex: 1;
     overflow-y: auto;
     padding: 10px;
+    min-height: 0;
 }
 
 .archive-item {
     padding: 0;
     margin: 4px 0;
-    border: 1px solid #222;
+    border: 1px solid #111;
     transition: all 0.2s;
 }
 
 .archive-item:hover {
     border-color: #8C92AC;
-    background: #111;
+    background: #000;
 }
 
 .archive-item.selected {
@@ -78,7 +80,7 @@
     padding: 4px 8px 8px 28px;
     font-size: 11px;
     color: #666;
-    border-top: 1px solid #222;
+    border-top: 1px solid #111;
 }
 
 .archive-metadata {
@@ -109,9 +111,34 @@
 
 /* Metadata Panel */
 .metadata {
+    flex: 1;
     padding: 10px;
     font-size: 12px;
-    border-top: 1px solid #333;
+    border-top: 1px solid #111;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Drone List Container (inside metadata) */
+.drone-list-container {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    margin-top: 4px;
+}
+
+.drone-list-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.drone-color-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
 }
 
 .metadata-row {
@@ -141,18 +168,19 @@ canvas {
     display: flex;
     gap: 10px;
     align-items: center;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid #111;
     flex-shrink: 0;
     min-height: 40px;
-    background: #111;
+    background: #000;
 }
 
 /* Timeline */
 #timeline {
     flex: 1;
     height: 20px;
-    background: #111;
+    background: #000;
     cursor: pointer;
+    border: 1px solid #0a0a0a;
 }
 
 #timeline-progress {

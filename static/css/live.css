@@ -1,0 +1,119 @@
+/* HIVE TERMINAL - Live Dashboard Styles */
+
+/* Flexbox Layout with Resizable Panels */
+.container {
+    display: flex;
+    gap: 0;
+    height: 90vh;
+    background: #000;
+}
+
+.panel-left {
+    width: 20%;
+    min-width: 150px;
+    max-width: 50%;
+}
+
+.panel-right {
+    flex: 1;
+}
+
+/* Resizer Handle */
+.resizer {
+    width: 8px;
+    background: #000;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.resizer:hover,
+.resizer.dragging {
+    background: #8C92AC;
+}
+
+.resizer::after {
+    content: "\22ee";
+    color: #666;
+    font-size: 16px;
+}
+
+/* Video Feed */
+img.feed {
+    width: 100%;
+    height: auto;
+    display: block;
+    opacity: 0.9;
+    background: #000;
+}
+
+/* Drone Registry */
+#drone-registry {
+    padding: 10px;
+    font-size: 12px;
+    height: 150px;
+    overflow-y: auto;
+    background: #000;
+}
+
+/* Header Controls */
+.header-controls {
+    float: right;
+    font-size: 14px;
+}
+
+.header-control {
+    margin-left: 10px;
+}
+
+.header-control label {
+    color: #aaa;
+}
+
+#mode-select {
+    background: #000;
+    color: #f0f;
+    border: 1px solid #111;
+    font-family: monospace;
+    padding: 2px;
+}
+
+#v-count {
+    width: 40px;
+}
+
+#time-filter,
+#drone-filter {
+    background: #000;
+    color: #8C92AC;
+    border: 1px solid #111;
+    font-family: monospace;
+    padding: 2px;
+}
+
+/* Reset Button */
+#reset-btn {
+    color: #f44;
+    border: 1px solid #f44;
+    background: #000;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+/* Sun Status Indicator */
+#sun-status {
+    color: #888;
+}
+
+/* Playback Link */
+.playback-link {
+    float: right;
+    font-size: 14px;
+    color: #0af;
+    text-decoration: none;
+    margin-left: 20px;
+    border: 1px solid #0af;
+    padding: 2px 8px;
+}

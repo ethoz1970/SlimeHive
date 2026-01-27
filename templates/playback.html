@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HIVE PLAYBACK TERMINAL</title>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/playback.css">
+</head>
+<body>
+    <h2>
+        /// HIVE MIND: PLAYBACK TERMINAL ///
+        <a href="/" class="live-link">[LIVE DASHBOARD]</a>
+    </h2>
+    <div class="container">
+        <div class="panel">
+            <div class="panel-header">ARCHIVED SESSIONS</div>
+            <div class="archive-list" id="archive-list">
+                <div style="color:#666;">Loading archives...</div>
+            </div>
+            <div class="metadata" id="metadata">
+                <div class="panel-header" style="margin: -10px -10px 10px -10px; padding: 8px;">METADATA</div>
+                <div class="metadata-row"><span class="metadata-label">Mood:</span> <span id="meta-mood">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Decay:</span> <span id="meta-decay">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Sim Mode:</span> <span id="meta-mode">-</span></div>
+                <div class="metadata-row"><span class="metadata-label">Archived:</span> <span id="meta-time">-</span></div>
+                <div class="metadata-row" style="margin-top: 10px;"><span class="metadata-label">Active Drones:</span> <span id="meta-drones">-</span></div>
+                <div id="drone-list-items" class="drone-list-container"></div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="controls" id="playback-controls">
+                <button id="play-btn" onclick="togglePlayback()" disabled>PLAY</button>
+                <button id="stop-btn" onclick="stopPlayback()">STOP</button>
+                <select id="mode-select" onchange="setPlaybackMode()">
+                    <option value="simulate">SIMULATE</option>
+                    <option value="recorded">RECORDED</option>
+                </select>
+                <select id="speed-select" onchange="setSpeed()">
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="2">2x</option>
+                    <option value="4">4x</option>
+                </select>
+                <select id="viz-mode" onchange="setVizMode()">
+                    <option value="fuzzy">FUZZY</option>
+                    <option value="hard">HARD</option>
+                    <option value="heat">HEAT TRAIL</option>
+                    <option value="ghost">GHOST</option>
+                </select>
+                <div id="timeline" onclick="seekTimeline(event)">
+                    <div id="timeline-progress"></div>
+                </div>
+                <span id="timestamp">Select a session</span>
+                <span id="playback-badge" style="display:none;"></span>
+            </div>
+            <div class="panel-header">SNAPSHOT VISUALIZATION</div>
+            <div id="map-container">
+                <canvas id="hiveMap" width="800" height="800"></canvas>
+                <div id="overlays"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/hive-core.js"></script>
+    <script src="/static/js/playback.js"></script>
+</body>
+</html>

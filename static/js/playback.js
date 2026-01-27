@@ -20,6 +20,63 @@ let playbackSpeed = 1;
 let playbackIndex = 0;
 let animationId = null;
 let lastFrameTime = 0;
+let vizMode = 'fuzzy';  // Default visualization mode
+
+/**
+ * Set visualization mode
+ */
+function setVizMode() {
+    vizMode = document.getElementById('viz-mode').value;
+    if (!isPlaying && currentArchive) {
+        renderSnapshot();
+    }
+}
+
+/**
+ * Draw heat trail visualization
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {Array} trail - Trail points [[x,y], ...]
+ * @param {number} hue - Color hue
+ */
+function drawHeatTrail(ctx, trail, hue) {
+    if (trail.length < 2) return;
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `hsla(${hue}, 100%, 50%, 0.3)`;
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+
+    ctx.beginPath();
+    ctx.moveTo(trail[0][0] * scale + scale / 2, (gridSize - 1 - trail[0][1]) * scale + scale / 2);
+    for (let i = 1; i < trail.length; i++) {
+        ctx.lineTo(trail[i][0] * scale + scale / 2, (gridSize - 1 - trail[i][1]) * scale + scale / 2);
+    }
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+}
+
+/**
+ * Draw ghost drone visualization with faded afterimages
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {Array} trail - Trail points [[x,y], ...]
+ * @param {number} hue - Color hue
+ */
+function drawGhostDrone(ctx, trail, hue) {
+    const trailLen = trail.length;
+    for (let i = 0; i < trailLen; i++) {
+        const age = (trailLen - i) / trailLen;
+        const alpha = age * 0.6;
+        const radius = 4 + age * 4;
+
+        const x = trail[i][0] * scale + scale / 2;
+        const y = (gridSize - 1 - trail[i][1]) * scale + scale / 2;
+
+        ctx.fillStyle = `hsla(${hue}, 100%, 50%, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+}
 
 /**
  * Load available archives from server
@@ -129,6 +186,7 @@ async function loadLiveState() {
         document.getElementById('meta-drones').innerText = Object.keys(currentArchive.drones || {}).length;
         document.getElementById('meta-time').innerText = 'LIVE (now)';
 
+        updateDroneList(Object.keys(currentArchive.drones || {}));
         renderSnapshot();
 
         flightData = null;
@@ -179,6 +237,7 @@ async function selectArchive(index) {
         document.getElementById('meta-drones').innerText = Object.keys(currentArchive.drones || {}).length;
         document.getElementById('meta-time').innerText = archive.display_time;
 
+        updateDroneList(Object.keys(currentArchive.drones || {}));
         renderSnapshot();
         await checkFlightLog(archive.timestamp);
 
@@ -322,8 +381,9 @@ function renderSnapshot() {
  * Draw drones at positions
  * @param {Object} drones - Drone data from archive
  * @param {Object} positions - Optional position overrides
+ * @param {Object} trails - Optional trail data for visualization modes
  */
-function drawDrones(drones, positions = null) {
+function drawDrones(drones, positions = null, trails = null) {
     overlays.innerHTML = '';
 
     const allDroneIds = new Set([
@@ -338,22 +398,55 @@ function drawDrones(drones, positions = null) {
 
         const x = positions && positions[id] ? positions[id].x : (drone.x || 0);
         const y = positions && positions[id] ? positions[id].y : (drone.y || 0);
+        const canvasX = x * scale + scale / 2;
+        const canvasY = (gridSize - 1 - y) * scale + scale / 2;
 
-        const el = document.createElement('div');
-        el.className = 'drone-label';
-        el.style.left = (x * scale + 10) + 'px';
-        el.style.top = ((gridSize - 1 - y) * scale - 10) + 'px';
-        el.innerHTML = `[${id}]`;
-        el.style.color = color;
-        overlays.appendChild(el);
+        // Get trail for this drone
+        const trail = trails ? (trails[id] || []) : (drone.trail || [[x, y]]);
 
-        ctx.fillStyle = color;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(x * scale + scale / 2, (gridSize - 1 - y) * scale + scale / 2, 8, 0, 2 * Math.PI);
-        ctx.fill();
-        ctx.stroke();
+        switch (vizMode) {
+            case 'fuzzy':
+                drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+                break;
+            case 'hard':
+                ctx.fillStyle = color;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(canvasX, canvasY, 8, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                break;
+            case 'heat':
+                drawHeatTrail(ctx, trail, hue);
+                break;
+            case 'ghost':
+                drawGhostDrone(ctx, trail, hue);
+                break;
+        }
+
+    }
+}
+
+/**
+ * Update the drone list panel with current drone IDs
+ * @param {Array} droneIds - Array of drone ID strings
+ */
+function updateDroneList(droneIds) {
+    const listEl = document.getElementById('drone-list-items');
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+
+    for (const id of droneIds) {
+        const hue = stringToHue(id);
+        const item = document.createElement('div');
+        item.className = 'drone-list-item';
+        item.innerHTML = `
+            <span class="drone-color-dot" style="background: hsl(${hue}, 100%, 50%)"></span>
+            <span style="color: hsl(${hue}, 100%, 50%)">${id}</span>
+        `;
+        listEl.appendChild(item);
     }
 }
 
@@ -406,6 +499,10 @@ function startPlayback() {
 
     window.activePlaybackData = dataToUse;
     badge.style.display = 'inline';
+
+    // Update drone list with all drone IDs from the playback data
+    const droneIds = [...new Set(dataToUse.map(p => p.drone_id))];
+    updateDroneList(droneIds);
 
     isPlaying = true;
     document.getElementById('play-btn').innerText = 'PAUSE';
@@ -514,25 +611,27 @@ function renderFrame(index) {
         trails[id].push([point.x, point.y]);
     }
 
-    // Draw trails
-    for (const [id, trail] of Object.entries(trails)) {
-        if (trail.length < 2) continue;
+    // Draw trails for fuzzy and hard modes
+    if (vizMode === 'fuzzy' || vizMode === 'hard') {
+        for (const [id, trail] of Object.entries(trails)) {
+            if (trail.length < 2) continue;
 
-        const hue = stringToHue(id);
-        ctx.beginPath();
-        ctx.strokeStyle = `hsl(${hue}, 100%, 50%)`;
-        ctx.globalAlpha = 0.4;
-        ctx.lineWidth = 2;
+            const hue = stringToHue(id);
+            ctx.beginPath();
+            ctx.strokeStyle = `hsl(${hue}, 100%, 50%)`;
+            ctx.globalAlpha = 0.4;
+            ctx.lineWidth = 2;
 
-        ctx.moveTo(trail[0][0] * scale + scale / 2, (gridSize - 1 - trail[0][1]) * scale + scale / 2);
-        for (let i = 1; i < trail.length; i++) {
-            ctx.lineTo(trail[i][0] * scale + scale / 2, (gridSize - 1 - trail[i][1]) * scale + scale / 2);
+            ctx.moveTo(trail[0][0] * scale + scale / 2, (gridSize - 1 - trail[0][1]) * scale + scale / 2);
+            for (let i = 1; i < trail.length; i++) {
+                ctx.lineTo(trail[i][0] * scale + scale / 2, (gridSize - 1 - trail[i][1]) * scale + scale / 2);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
         }
-        ctx.stroke();
-        ctx.globalAlpha = 1.0;
     }
 
-    drawDrones(currentArchive.drones, positions);
+    drawDrones(currentArchive.drones, positions, trails);
 
     // Update timeline
     const pct = (index / data.length) * 100;
