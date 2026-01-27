@@ -5,9 +5,18 @@ import time
 import threading
 import random
 import shutil
+import csv
+import re
+import glob
 from datetime import datetime
+from flask import Flask, jsonify, request
 
 import os
+
+# Suppress Flask request logging for cleaner output
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 # --- CONFIGURATION ---
 GRID_SIZE = 100  # Grid dimensions (100x100 = 10,000 cells)
@@ -509,8 +518,208 @@ def physics_loop():
         if int(time.time()) % 2 == 0 and random.random() < 0.1:
              print("/// HIVE MEMORY SYNCED ///")
 
+# --- API SERVER (For Remote Dashboard) ---
+api_app = Flask(__name__)
+API_PORT = 5001
+
+@api_app.route('/data')
+def api_data():
+    """Return current hive state"""
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        return {"grid": [], "drones": {}, "mood": "ERROR", "error": str(e)}
+
+@api_app.route('/history_data')
+def api_history_data():
+    """Return drone movement history from flight logs"""
+    try:
+        window = int(request.args.get('window', 60))
+        now = time.time()
+        cutoff = now - window
+
+        logs_dir = os.path.join(BASE_DIR, "flight_logs")
+        list_of_files = glob.glob(os.path.join(logs_dir, '*.csv'))
+        if not list_of_files:
+            return jsonify({})
+
+        latest_file = max(list_of_files, key=os.path.getctime)
+        history = {}
+
+        with open(latest_file, 'r') as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            for row in reader:
+                if not row:
+                    continue
+                try:
+                    ts = float(row[0])
+                    if ts > cutoff:
+                        did = row[1]
+                        x = int(row[2])
+                        y = int(row[3])
+                        if did not in history:
+                            history[did] = []
+                        history[did].append([x, y])
+                except ValueError:
+                    continue
+
+        return jsonify(history)
+    except Exception as e:
+        return jsonify({})
+
+@api_app.route('/api/archives')
+def api_list_archives():
+    """List archived JSON snapshots"""
+    try:
+        snapshots_dir = os.path.join(BASE_DIR, "snapshots")
+        if not os.path.exists(snapshots_dir):
+            return jsonify([])
+
+        archives = []
+        pattern = re.compile(r'^hive_state_ARCHIVE_(\d{4})-(\d{2})-(\d{2})_(\d{6})\.json$')
+
+        for filename in os.listdir(snapshots_dir):
+            match = pattern.match(filename)
+            if match:
+                try:
+                    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                    time_str = match.group(4)
+                    hour, minute, second = int(time_str[0:2]), int(time_str[2:4]), int(time_str[4:6])
+                    dt = datetime(year, month, day, hour, minute, second)
+                    archives.append({
+                        'filename': filename,
+                        'timestamp': dt.timestamp(),
+                        'display_time': dt.strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+        archives.sort(key=lambda x: x['timestamp'], reverse=True)
+        return jsonify(archives)
+    except Exception as e:
+        return jsonify([])
+
+@api_app.route('/api/archive/<filename>')
+def api_get_archive(filename):
+    """Return contents of a specific archive file"""
+    try:
+        pattern = re.compile(r'^hive_state_ARCHIVE_\d{4}-\d{2}-\d{2}_\d{6}\.json$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        file_path = os.path.join(BASE_DIR, "snapshots", filename)
+        snapshots_dir = os.path.join(BASE_DIR, "snapshots")
+
+        if not os.path.abspath(file_path).startswith(os.path.abspath(snapshots_dir)):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Archive not found'}), 404
+
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@api_app.route('/api/flight_logs')
+def api_list_flight_logs():
+    """List available flight log CSV files"""
+    try:
+        logs_dir = os.path.join(BASE_DIR, "flight_logs")
+        if not os.path.exists(logs_dir):
+            return jsonify([])
+
+        logs = []
+        pattern = re.compile(r'^session_(\d{4})-(\d{2})-(\d{2})_(\d{6})\.csv$')
+
+        for filename in os.listdir(logs_dir):
+            match = pattern.match(filename)
+            if match:
+                try:
+                    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                    time_str = match.group(4)
+                    hour, minute, second = int(time_str[0:2]), int(time_str[2:4]), int(time_str[4:6])
+                    dt = datetime(year, month, day, hour, minute, second)
+                    start_time = dt.timestamp()
+
+                    file_path = os.path.join(logs_dir, filename)
+                    end_time = 0
+                    with open(file_path, 'r') as f:
+                        reader = csv.reader(f)
+                        next(reader, None)
+                        for row in reader:
+                            if row:
+                                try:
+                                    end_time = float(row[0])
+                                except:
+                                    pass
+
+                    logs.append({
+                        'filename': filename,
+                        'start_time': start_time,
+                        'end_time': end_time
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+        logs.sort(key=lambda x: x['start_time'], reverse=True)
+        return jsonify(logs)
+    except Exception as e:
+        return jsonify([])
+
+@api_app.route('/api/flight_log/<filename>')
+def api_get_flight_log(filename):
+    """Return contents of a specific flight log as JSON array"""
+    try:
+        pattern = re.compile(r'^session_\d{4}-\d{2}-\d{2}_\d{6}\.csv$')
+        if not pattern.match(filename):
+            return jsonify({'error': 'Invalid filename'}), 400
+
+        logs_dir = os.path.join(BASE_DIR, "flight_logs")
+        file_path = os.path.join(logs_dir, filename)
+
+        if not os.path.abspath(file_path).startswith(os.path.abspath(logs_dir)):
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Flight log not found'}), 404
+
+        data = []
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            for row in reader:
+                if row and len(row) >= 4:
+                    try:
+                        data.append({
+                            'timestamp': float(row[0]),
+                            'drone_id': row[1],
+                            'x': int(row[2]),
+                            'y': int(row[3]),
+                            'intensity': int(row[4]) if len(row) > 4 else 0,
+                            'rssi': int(row[5]) if len(row) > 5 else 0
+                        })
+                    except (ValueError, IndexError):
+                        continue
+
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def run_api_server():
+    """Run Flask API server in background thread"""
+    print(f"/// API SERVER STARTING ON PORT {API_PORT} ///")
+    api_app.run(host='0.0.0.0', port=API_PORT, debug=False, threaded=True)
+
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
+    # Start API Server in background
+    api_thread = threading.Thread(target=run_api_server)
+    api_thread.daemon = True
+    api_thread.start()
+
     # Start Physics in background
     t = threading.Thread(target=physics_loop)
     t.daemon = True
