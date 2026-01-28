@@ -2,5 +2,10 @@ __pycache__/
 *.pyc
 venv/
 hive_env/
-*.json
+hive_state.json
+hive_state.json.tmp
 .DS_Store
+
+# Simulation outputs (keep config)
+analysis/metrics/
+analysis/sessions/

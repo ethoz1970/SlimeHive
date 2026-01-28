@@ -1,0 +1,35 @@
+{
+    "simulation": {
+        "tick_rate": 30,
+        "duration_seconds": 60,
+        "grid_size": 100,
+        "headless": false
+    },
+    "drones": {
+        "count": 50,
+        "spawn_pattern": "random",
+        "behavior_mode": "BOIDS"
+    },
+    "behavior_params": {
+        "separation_distance": 3,
+        "separation_weight": 2.0,
+        "cohesion_weight": 0.5,
+        "alignment_weight": 1.0,
+        "neighbor_radius": 15,
+        "move_probability": 1.0
+    },
+    "pheromones": {
+        "deposit_amount": 5.0,
+        "ghost_deposit": 0.5,
+        "decay_rate": 0.95
+    },
+    "metrics": {
+        "enabled": true,
+        "sample_rate": 1,
+        "export_csv": true
+    },
+    "recording": {
+        "enabled": false,
+        "output_dir": "analysis/sessions"
+    }
+}
