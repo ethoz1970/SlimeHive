@@ -63,6 +63,36 @@ active_drones = {}
 # RSSI Buffer for Triangulation: { "ID": { "QUEEN": [-50, -51], "SENTINEL": [-80], "last_update": t } }
 rssi_buffer = {}
 
+# --- NEIGHBOR AWARENESS ---
+def get_neighbors(drone_id, max_distance=10):
+    """
+    Find all drones within max_distance of the given drone.
+    Returns: {neighbor_id: {"distance": float, "dx": int, "dy": int}}
+    """
+    drone = active_drones.get(drone_id)
+    if not drone:
+        return {}
+
+    neighbors = {}
+    my_x, my_y = drone["x"], drone["y"]
+
+    for other_id, other in active_drones.items():
+        if other_id == drone_id:
+            continue
+
+        dx = other["x"] - my_x
+        dy = other["y"] - my_y
+        dist = (dx**2 + dy**2) ** 0.5
+
+        if dist <= max_distance and dist > 0:
+            neighbors[other_id] = {
+                "distance": dist,
+                "dx": dx,
+                "dy": dy
+            }
+
+    return neighbors
+
 # --- MQTT CALLBACKS ---
 def on_connect(client, userdata, flags, rc, properties=None):
     print(f"/// HIVE MIND ONLINE /// Result: {rc}")
@@ -449,6 +479,121 @@ def physics_loop():
                     dx = random.choice([-1, 0, 1])
                     dy = random.choice([-1, 0, 1])
 
+            elif SIMULATION_MODE == "AVOID":
+                # Pure separation - maintain distance from neighbors
+                neighbors = get_neighbors(v_id, max_distance=8)
+
+                if neighbors:
+                    # Find closest neighbor
+                    closest_id = min(neighbors, key=lambda k: neighbors[k]["distance"])
+                    closest = neighbors[closest_id]
+
+                    if closest["distance"] < 3:
+                        # Too close - move directly away
+                        dx = -int(np.sign(closest["dx"])) if closest["dx"] != 0 else random.choice([-1, 1])
+                        dy = -int(np.sign(closest["dy"])) if closest["dy"] != 0 else random.choice([-1, 1])
+                    else:
+                        # Comfortable distance, random walk
+                        dx = random.choice([-1, 0, 1])
+                        dy = random.choice([-1, 0, 1])
+                else:
+                    # No neighbors, random walk
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+            elif SIMULATION_MODE == "FLOCK":
+                # Cohesion + separation - stay together but don't stack
+                neighbors = get_neighbors(v_id, max_distance=15)
+
+                dx, dy = 0, 0
+
+                if len(neighbors) == 0:
+                    # Isolated - move toward swarm center
+                    vdrones = [d for did, d in active_drones.items() if did.startswith(VIRTUAL_PREFIX)]
+                    if len(vdrones) > 1:
+                        cx = sum(d["x"] for d in vdrones) / len(vdrones)
+                        cy = sum(d["y"] for d in vdrones) / len(vdrones)
+                        dx = int(np.sign(cx - drone["x"]))
+                        dy = int(np.sign(cy - drone["y"]))
+                    else:
+                        dx = random.choice([-1, 0, 1])
+                        dy = random.choice([-1, 0, 1])
+                else:
+                    # Check for close neighbors (separation)
+                    close = {k: v for k, v in neighbors.items() if v["distance"] < 3}
+                    if close:
+                        # Move away from close neighbors
+                        for ndata in close.values():
+                            dx -= int(np.sign(ndata["dx"])) if ndata["dx"] != 0 else 0
+                            dy -= int(np.sign(ndata["dy"])) if ndata["dy"] != 0 else 0
+                        # Normalize
+                        dx = int(np.sign(dx)) if dx != 0 else 0
+                        dy = int(np.sign(dy)) if dy != 0 else 0
+                    else:
+                        # Cohesion - move toward neighbor center
+                        avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
+                        avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
+                        dx = int(np.sign(avg_x))
+                        dy = int(np.sign(avg_y))
+
+                # Add randomness to prevent deadlock
+                if random.random() < 0.25:
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+            elif SIMULATION_MODE == "BOIDS":
+                # Full Boids: separation + cohesion + alignment
+                neighbors = get_neighbors(v_id, max_distance=15)
+
+                sep_x, sep_y = 0, 0  # Separation force
+                coh_x, coh_y = 0, 0  # Cohesion force
+                ali_x, ali_y = 0, 0  # Alignment force
+
+                if neighbors:
+                    # SEPARATION - avoid close neighbors
+                    close = {k: v for k, v in neighbors.items() if v["distance"] < 4}
+                    for ndata in close.values():
+                        # Inverse weight by distance (closer = stronger repulsion)
+                        weight = 1.0 / max(ndata["distance"], 0.5)
+                        sep_x -= ndata["dx"] * weight
+                        sep_y -= ndata["dy"] * weight
+
+                    # COHESION - move toward center of neighbors
+                    avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
+                    avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
+                    coh_x = avg_x
+                    coh_y = avg_y
+
+                    # ALIGNMENT - match velocity of neighbors
+                    vx_sum, vy_sum = 0, 0
+                    count = 0
+                    for nid in neighbors:
+                        n = active_drones.get(nid, {})
+                        vx_sum += n.get("vx", 0)
+                        vy_sum += n.get("vy", 0)
+                        count += 1
+                    if count > 0:
+                        ali_x = vx_sum / count
+                        ali_y = vy_sum / count
+
+                    # Combine forces with weights
+                    total_x = sep_x * 2.0 + coh_x * 0.5 + ali_x * 1.0
+                    total_y = sep_y * 2.0 + coh_y * 0.5 + ali_y * 1.0
+
+                    dx = int(np.sign(total_x)) if abs(total_x) > 0.1 else 0
+                    dy = int(np.sign(total_y)) if abs(total_y) > 0.1 else 0
+                else:
+                    # No neighbors - random walk
+                    dx = random.choice([-1, 0, 1])
+                    dy = random.choice([-1, 0, 1])
+
+                # Add slight randomness
+                if random.random() < 0.15:
+                    dx += random.choice([-1, 0, 1])
+                    dy += random.choice([-1, 0, 1])
+                    dx = int(np.sign(dx)) if dx != 0 else 0
+                    dy = int(np.sign(dy)) if dy != 0 else 0
+
             else:  # RANDOM (Default)
                 dx = random.choice([-1, 0, 1])
                 dy = random.choice([-1, 0, 1])
@@ -456,7 +601,11 @@ def physics_loop():
             # Constrain to operational boundary
             new_x = int(max(BOUNDARY_MIN_X, min(BOUNDARY_MAX_X, drone["x"] + dx)))
             new_y = int(max(BOUNDARY_MIN_Y, min(BOUNDARY_MAX_Y, drone["y"] + dy)))
-            
+
+            # Track velocity for alignment behavior
+            drone["vx"] = new_x - drone["x"]
+            drone["vy"] = new_y - drone["y"]
+
             # Update Position
             drone["x"] = new_x
             drone["y"] = new_y
