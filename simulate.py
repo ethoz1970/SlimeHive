@@ -21,12 +21,14 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config", "simulation.json")
 
+HISTORY_FILE = os.path.join(BASE_DIR, "hive_state.json")
+
 DEFAULT_CONFIG = {
     "simulation": {
         "tick_rate": 30,
         "duration_seconds": 60,
         "grid_size": 100,
-        "headless": False
+        "live_view": True
     },
     "drones": {
         "count": 20,
@@ -400,6 +402,10 @@ class Simulation:
         decay_rate = self.config["pheromones"]["decay_rate"]
         self.hive_grid *= decay_rate
 
+        # Write state for live dashboard viewing
+        if self.config["simulation"].get("live_view", True):
+            self.write_live_state()
+
     def export_metrics(self):
         """Export metrics to CSV"""
         if not self.metrics_history:
@@ -420,6 +426,33 @@ class Simulation:
             writer.writerows(self.metrics_history)
 
         print(f"    Metrics exported: {filename}")
+
+    def write_live_state(self):
+        """Write current state to hive_state.json for dashboard viewing"""
+        state = {
+            "grid": self.hive_grid.tolist(),
+            "ghost_grid": self.ghost_grid.tolist(),
+            "drones": {k: {**v, "trail": v.get("trail", [])} for k, v in self.drones.items()},
+            "mood": "SIMULATION",
+            "decay_rate": self.config["pheromones"]["decay_rate"],
+            "sim_mode": self.config["drones"]["behavior_mode"],
+            "boundary": {
+                "min_x": self.margin,
+                "min_y": self.margin,
+                "max_x": self.grid_size - self.margin,
+                "max_y": self.grid_size - self.margin
+            }
+        }
+
+        try:
+            tmp_file = HISTORY_FILE + ".tmp"
+            with open(tmp_file, "w") as f:
+                json.dump(state, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, HISTORY_FILE)
+        except Exception as e:
+            pass  # Don't crash simulation if write fails
 
     def export_final_state(self):
         """Export final state as JSON (compatible with dashboard)"""
@@ -466,7 +499,11 @@ class Simulation:
         print(f"    Tick Rate:  {tick_rate} Hz")
         print(f"    Duration:   {duration}s ({total_ticks} ticks)")
         print(f"    Spawn:      {self.config['drones']['spawn_pattern']}")
+        print(f"    Live View:  {self.config['simulation'].get('live_view', True)}")
         print("=" * 60)
+        if self.config["simulation"].get("live_view", True):
+            print("    Dashboard: http://localhost:5050")
+            print("    Run in another terminal: python dashboard_hud.py")
         print()
 
         # Spawn drones
@@ -554,6 +591,7 @@ Spawn patterns: random, center, corners, line
     parser.add_argument("--spawn", type=str, help="Spawn pattern")
     parser.add_argument("--grid-size", type=int, help="Grid size (NxN)")
     parser.add_argument("--save-state", action="store_true", help="Save final state as JSON")
+    parser.add_argument("--no-live", action="store_true", help="Disable live dashboard updates")
 
     args = parser.parse_args()
 
@@ -575,6 +613,8 @@ Spawn patterns: random, center, corners, line
         config["simulation"]["grid_size"] = args.grid_size
     if args.save_state:
         config["recording"]["enabled"] = True
+    if args.no_live:
+        config["simulation"]["live_view"] = False
 
     # Run simulation
     sim = Simulation(config)
