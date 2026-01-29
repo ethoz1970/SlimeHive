@@ -1,89 +1,138 @@
 #!/usr/bin/env python3
 """
-Upload SlimeHive recordings to GitHub Releases.
+Publish SlimeHive recordings for the online viewer.
 
 Usage:
-    python publish_recording.py recordings/sim_*.slimehive
-    python publish_recording.py --list
+    python publish_recording.py recordings/sim_*.slimehive     # Copy to docs/viewer/recordings
+    python publish_recording.py --list                          # List published recordings
+    python publish_recording.py --clean                         # Remove all published recordings
 """
 
 import argparse
-import subprocess
-import sys
+import shutil
+import json
 import os
+import re
+from datetime import datetime
 
-RELEASE_TAG = "recordings"
+VIEWER_RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), 'docs', 'viewer', 'recordings')
+INDEX_FILE = os.path.join(VIEWER_RECORDINGS_DIR, 'index.json')
 
-def ensure_release_exists():
-    """Create recordings release if it doesn't exist"""
-    result = subprocess.run(
-        ["gh", "release", "view", RELEASE_TAG],
-        capture_output=True
-    )
-    if result.returncode != 0:
-        print(f"Creating release: {RELEASE_TAG}")
-        subprocess.run([
-            "gh", "release", "create", RELEASE_TAG,
-            "--title", "SlimeHive Recordings",
-            "--notes", "Recorded simulations for the online viewer"
-        ], check=True)
 
-def upload(filepath):
-    """Upload a recording file"""
+def ensure_dir():
+    """Ensure recordings directory exists"""
+    os.makedirs(VIEWER_RECORDINGS_DIR, exist_ok=True)
+
+
+def load_index():
+    """Load existing index or return empty list"""
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+
+def save_index(recordings):
+    """Save index file"""
+    with open(INDEX_FILE, 'w') as f:
+        json.dump(recordings, f, indent=2)
+
+
+def parse_recording_date(filename):
+    """Extract date from recording filename"""
+    # Pattern: sim_MODE_Ndrones_YYYY-MM-DD_HHMMSS.slimehive
+    match = re.search(r'(\d{4}-\d{2}-\d{2})_(\d{6})', filename)
+    if match:
+        date_str = match.group(1)
+        time_str = match.group(2)
+        try:
+            dt = datetime.strptime(f"{date_str}_{time_str}", "%Y-%m-%d_%H%M%S")
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            pass
+    return ""
+
+
+def publish(filepath):
+    """Copy a recording to the viewer directory"""
     if not os.path.exists(filepath):
         print(f"Error: {filepath} not found")
         return False
 
-    ensure_release_exists()
+    ensure_dir()
+    filename = os.path.basename(filepath)
+    dest = os.path.join(VIEWER_RECORDINGS_DIR, filename)
 
-    print(f"Uploading: {filepath}")
-    result = subprocess.run([
-        "gh", "release", "upload", RELEASE_TAG, filepath,
-        "--clobber"
-    ])
+    # Copy file
+    shutil.copy2(filepath, dest)
+    print(f"Published: {filename}")
 
-    if result.returncode == 0:
-        print(f"Success! View recordings at viewer URL")
-        return True
-    return False
+    # Update index
+    recordings = load_index()
+
+    # Remove existing entry with same name
+    recordings = [r for r in recordings if r['name'] != filename]
+
+    # Add new entry
+    recordings.append({
+        'name': filename,
+        'date': parse_recording_date(filename),
+        'size': os.path.getsize(dest)
+    })
+
+    # Sort by date descending
+    recordings.sort(key=lambda r: r['date'], reverse=True)
+    save_index(recordings)
+
+    return True
+
 
 def list_recordings():
-    """List uploaded recordings"""
-    result = subprocess.run(
-        ["gh", "release", "view", RELEASE_TAG, "--json", "assets"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print("No recordings release found")
+    """List published recordings"""
+    recordings = load_index()
+
+    if not recordings:
+        print("No recordings published yet")
+        print(f"Run: python publish_recording.py recordings/*.slimehive")
         return
 
-    import json
-    data = json.loads(result.stdout)
-    assets = [a for a in data.get("assets", []) if a["name"].endswith(".slimehive")]
+    print(f"Published recordings ({len(recordings)}):")
+    for r in recordings:
+        size_kb = r.get('size', 0) // 1024
+        print(f"  {r['name']} ({size_kb}KB) - {r.get('date', 'unknown')}")
 
-    if not assets:
-        print("No recordings uploaded yet")
-        return
 
-    print(f"Recordings ({len(assets)}):")
-    for a in assets:
-        print(f"  {a['name']}")
+def clean():
+    """Remove all published recordings"""
+    if os.path.exists(VIEWER_RECORDINGS_DIR):
+        for f in os.listdir(VIEWER_RECORDINGS_DIR):
+            os.remove(os.path.join(VIEWER_RECORDINGS_DIR, f))
+        print("Cleaned all published recordings")
+    else:
+        print("Nothing to clean")
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Upload SlimeHive recordings to GitHub Releases"
+        description="Publish SlimeHive recordings for online viewer"
     )
-    parser.add_argument("files", nargs="*", help="Recording files to upload")
-    parser.add_argument("--list", action="store_true", help="List uploaded recordings")
+    parser.add_argument("files", nargs="*", help="Recording files to publish")
+    parser.add_argument("--list", action="store_true", help="List published recordings")
+    parser.add_argument("--clean", action="store_true", help="Remove all published recordings")
     args = parser.parse_args()
 
-    if args.list:
+    if args.clean:
+        clean()
+    elif args.list:
         list_recordings()
     elif args.files:
         for f in args.files:
-            upload(f)
+            publish(f)
+        print(f"\nRecordings ready at: docs/viewer/recordings/")
+        print("Commit and push to deploy to GitHub Pages")
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()

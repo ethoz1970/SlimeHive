@@ -1,7 +1,6 @@
-// Configuration - UPDATE THESE FOR YOUR REPO
-const GITHUB_OWNER = 'ethoz1970';
-const GITHUB_REPO = 'SlimeHive';
-const RELEASE_TAG = 'recordings';
+// Configuration
+const RECORDINGS_PATH = 'recordings/';  // Relative path to recordings folder
+const RECORDINGS_INDEX = 'recordings/index.json';  // Index file listing available recordings
 
 // State
 let recording = null;
@@ -17,35 +16,30 @@ const ctx = canvas.getContext('2d');
 const GRID_SIZE = 100;
 const CELL_SIZE = canvas.width / GRID_SIZE;
 
-// --- GITHUB INTEGRATION ---
+// --- RECORDINGS LOADER ---
 
 async function loadAvailableRecordings() {
     const listEl = document.getElementById('recording-list');
 
     try {
-        const response = await fetch(
-            `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tags/${RELEASE_TAG}`
-        );
+        const response = await fetch(RECORDINGS_INDEX);
 
         if (!response.ok) {
-            listEl.innerHTML = '<div style="color: var(--dim);">No recordings found. Upload with publish_recording.py</div>';
+            listEl.innerHTML = '<div style="color: var(--dim);">No recordings found. Run: python publish_recording.py --local recordings/*.slimehive</div>';
             return;
         }
 
-        const release = await response.json();
-        const recordings = (release.assets || [])
-            .filter(a => a.name.endsWith('.slimehive'))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const recordings = await response.json();
 
         if (recordings.length === 0) {
-            listEl.innerHTML = '<div style="color: var(--dim);">No recordings in release</div>';
+            listEl.innerHTML = '<div style="color: var(--dim);">No recordings available</div>';
             return;
         }
 
         listEl.innerHTML = recordings.map(r => `
-            <div class="recording-item" onclick="loadRecording('${r.url}')">
+            <div class="recording-item" onclick="loadRecording('${RECORDINGS_PATH}${r.name}')">
                 <div>${r.name}</div>
-                <div style="color: var(--dim); font-size: 0.9em;">${new Date(r.created_at).toLocaleString()}</div>
+                <div style="color: var(--dim); font-size: 0.9em;">${r.date || ''}</div>
             </div>
         `).join('');
 
@@ -59,14 +53,7 @@ async function loadRecording(url) {
 
     try {
         console.log('Fetching:', url);
-
-        // Use Accept header for GitHub API URLs to get raw asset
-        const isGitHubApi = url.includes('api.github.com');
-        const fetchOptions = isGitHubApi
-            ? { headers: { 'Accept': 'application/octet-stream' } }
-            : {};
-
-        const response = await fetch(url, fetchOptions);
+        const response = await fetch(url);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
