@@ -76,6 +76,10 @@ DEFAULT_CONFIG = {
         "hunger_decay_multiplier": 0.25,  # 4x slower hunger decay
         "ghost_deposit_multiplier": 10.0,  # 10x larger ghost deposit on food find
         "cooldown_ticks": 50  # Ticks between jumps
+    },
+    "queen": {
+        "x": 10,
+        "y": 10
     }
 }
 
@@ -178,6 +182,191 @@ class SimulationRecorder:
         print(f"    Recording saved: {filepath}")
 
 
+class VideoRecorder:
+    """Records simulation frames to MP4 video"""
+
+    def __init__(self, fps=10, resolution=(800, 800)):
+        self.fps = fps
+        self.resolution = resolution
+        self.frames = []
+        self.frame_interval = 1.0 / fps
+        self.last_frame_time = -999
+        self.start_time = None
+
+    def start(self):
+        """Initialize video recording"""
+        self.start_time = time.time()
+        self.frames = []
+        self.last_frame_time = -999
+
+    def should_capture(self, elapsed_time):
+        """Check if we should capture a frame at this time"""
+        return elapsed_time - self.last_frame_time >= self.frame_interval
+
+    def capture_frame(self, sim, elapsed_time):
+        """Capture current simulation state as a frame"""
+        if not self.should_capture(elapsed_time):
+            return
+
+        self.last_frame_time = elapsed_time
+
+        # Create figure
+        dpi = 100
+        fig_size = (self.resolution[0] / dpi, self.resolution[1] / dpi)
+        fig, ax = plt.subplots(figsize=fig_size, dpi=dpi)
+
+        # Black background
+        ax.set_facecolor('black')
+
+        # Pheromone heatmap
+        colors = [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.78, 0.0),
+            (1.0, 1.0, 1.0)
+        ]
+        cmap = LinearSegmentedColormap.from_list('pheromone', colors, N=256)
+
+        grid_max = max(sim.ghost_grid.max(), 1)
+        normalized_grid = sim.ghost_grid.T / grid_max
+        ax.imshow(normalized_grid, cmap=cmap, origin='lower',
+                  extent=[0, sim.grid_size, 0, sim.grid_size])
+
+        # Boundary
+        boundary_rect = patches.Rectangle(
+            (sim.margin, sim.margin),
+            sim.grid_size - 2 * sim.margin,
+            sim.grid_size - 2 * sim.margin,
+            linewidth=1, edgecolor='white', facecolor='none',
+            linestyle='--', alpha=0.5
+        )
+        ax.add_patch(boundary_rect)
+
+        # Food sources
+        for food in sim.food_sources:
+            if food["consumed"]:
+                color = 'gray'
+                alpha = 0.5
+            else:
+                ratio = food["amount"] / food["max_amount"]
+                color = (1 - ratio, ratio, 0)
+                alpha = 0.8
+
+            food_rect = patches.Rectangle(
+                (food["x"] - food["radius"], food["y"] - food["radius"]),
+                food["radius"] * 2, food["radius"] * 2,
+                linewidth=1, edgecolor='white', facecolor=color, alpha=alpha
+            )
+            ax.add_patch(food_rect)
+
+        # Death markers
+        for marker in sim.death_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='red',
+                    markersize=6, markeredgewidth=2)
+
+        # Food markers (hopper finds)
+        for marker in sim.food_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='yellow',
+                    markersize=5, markeredgewidth=1.5)
+
+        # Smell markers
+        for marker in sim.smell_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='white',
+                    markersize=4, markeredgewidth=1, alpha=0.7)
+
+        # Queen
+        qx, qy = sim.queen_pos
+        ax.plot(qx, qy, 'D', color='white', markersize=10,
+                markeredgecolor='gold', markeredgewidth=2)
+
+        # Sentinel
+        sentinel_x = sim.grid_size - sim.margin
+        sentinel_y = sim.grid_size - sim.margin
+        ax.plot(sentinel_x, sentinel_y, '^', color='blue', markersize=8,
+                markeredgecolor='cyan', markeredgewidth=1)
+
+        # Drones
+        for drone_id, drone in sim.drones.items():
+            hue = (hash(drone_id) % 360) / 360.0
+            if hue < 1/6:
+                r, g, b = 1, hue * 6, 0
+            elif hue < 2/6:
+                r, g, b = 1 - (hue - 1/6) * 6, 1, 0
+            elif hue < 3/6:
+                r, g, b = 0, 1, (hue - 2/6) * 6
+            elif hue < 4/6:
+                r, g, b = 0, 1 - (hue - 3/6) * 6, 1
+            elif hue < 5/6:
+                r, g, b = (hue - 4/6) * 6, 0, 1
+            else:
+                r, g, b = 1, 0, 1 - (hue - 5/6) * 6
+
+            if drone.get("type") == "hopper":
+                ax.plot(drone["x"], drone["y"], 's', color=(r, g, b),
+                        markersize=6, markeredgecolor='white', markeredgewidth=0.5)
+            else:
+                ax.plot(drone["x"], drone["y"], 'o', color=(r, g, b),
+                        markersize=5, markeredgecolor='white', markeredgewidth=0.5)
+
+        # Configure axes
+        ax.set_xlim(0, sim.grid_size)
+        ax.set_ylim(0, sim.grid_size)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        # Add timestamp overlay
+        ax.text(5, sim.grid_size - 5, f"t={elapsed_time:.1f}s",
+                color='white', fontsize=10, verticalalignment='top',
+                fontfamily='monospace', alpha=0.8)
+
+        # Convert figure to numpy array
+        fig.tight_layout(pad=0)
+        fig.canvas.draw()
+
+        # Get the RGBA buffer
+        buf = fig.canvas.buffer_rgba()
+        frame = np.asarray(buf)
+
+        # Convert RGBA to RGB
+        frame_rgb = frame[:, :, :3].copy()
+
+        self.frames.append(frame_rgb)
+        plt.close(fig)
+
+    def save(self, filepath):
+        """Save frames to MP4 video file"""
+        if not self.frames:
+            print("    No frames to save")
+            return
+
+        try:
+            import imageio.v3 as iio
+        except ImportError:
+            try:
+                import imageio as iio
+            except ImportError:
+                print("    ERROR: imageio not installed. Run: pip install imageio imageio-ffmpeg")
+                return
+
+        print(f"    Encoding {len(self.frames)} frames to video...")
+
+        try:
+            # Use imageio to write MP4
+            iio.imwrite(filepath, self.frames, fps=self.fps, codec='libx264',
+                        plugin='pyav', options={'crf': '23'})
+        except Exception as e:
+            # Fallback to basic imageio if pyav not available
+            try:
+                iio.imwrite(filepath, self.frames, fps=self.fps)
+            except Exception as e2:
+                print(f"    Video save error: {e2}")
+                print("    Try: pip install imageio-ffmpeg")
+                return
+
+        print(f"    Video saved: {filepath}")
+        print(f"    Duration: {len(self.frames) / self.fps:.1f}s @ {self.fps} FPS")
+
+
 def deep_merge(base, override):
     """Deep merge two dictionaries"""
     result = base.copy()
@@ -217,7 +406,8 @@ class Simulation:
         self.food_sources = []
 
         # Queen position and food storage (for FEED_QUEEN mode)
-        self.queen_pos = (10, 10)
+        queen_config = config.get("queen", {})
+        self.queen_pos = (queen_config.get("x", 10), queen_config.get("y", 10))
         self.queen_food = 0
         self.trips_completed = 0
 
@@ -246,6 +436,7 @@ class Simulation:
 
         # Recording
         self.recorder = None
+        self.video_recorder = None
 
     def load_live_config(self):
         """Load live config changes from dashboard"""
@@ -1471,6 +1662,14 @@ class Simulation:
             self.recorder = SimulationRecorder(keyframe_interval)
             self.recorder.start(self)
 
+        # Start video recording if enabled
+        if self.config.get("recording", {}).get("video_enabled", False):
+            video_fps = self.config["recording"].get("video_fps", 10)
+            video_resolution = self.config["recording"].get("video_resolution", (800, 800))
+            self.video_recorder = VideoRecorder(fps=video_fps, resolution=video_resolution)
+            self.video_recorder.start()
+            print(f"    Video recording: {video_fps} FPS")
+
         # Simulation loop
         extinction = False
         for tick in range(total_ticks):
@@ -1523,6 +1722,11 @@ class Simulation:
             if self.recorder:
                 elapsed = time.time() - self.start_time
                 self.recorder.record_tick(self, elapsed, tick)
+
+            # Capture video frame
+            if self.video_recorder:
+                elapsed = time.time() - self.start_time
+                self.video_recorder.capture_frame(self, elapsed)
 
             # Maintain tick rate
             elapsed = time.time() - tick_start
@@ -1591,6 +1795,16 @@ class Simulation:
             filename = f"sim_{mode}_{drone_count}drones_{timestamp}.slimehive"
             self.recorder.save(self, os.path.join(recordings_dir, filename))
 
+        # Save video recording
+        if self.video_recorder:
+            recordings_dir = os.path.join(BASE_DIR, "recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            mode = self.config["drones"]["behavior_mode"].replace(",", "-")
+            drone_count = self.config["drones"]["count"]
+            filename = f"sim_{mode}_{drone_count}drones_{timestamp}.mp4"
+            self.video_recorder.save(os.path.join(recordings_dir, filename))
+
         print()
 
 
@@ -1606,12 +1820,15 @@ Examples:
   python simulate.py --mode FLOCK --spawn center
   python simulate.py --mode FORAGE --food-sources 5 --food-spread scattered
   python simulate.py --mode "FORAGE,AVOID" --food-sources 5 --drones 40
+  python simulate.py --video --video-fps 15 --duration 30
+  python simulate.py --queen-x 50 --queen-y 50 --mode FEED_QUEEN
 
 Available modes: RANDOM, AVOID, FLOCK, ALIGN, BOIDS, SWARM, SCATTER, FORAGE, FEED_QUEEN
   - Combine modes with commas: --mode "FORAGE,AVOID" or --mode "FLOCK,AVOID"
   - BOIDS = preset combo of AVOID+FLOCK+ALIGN
 Spawn patterns: random, center, corners, line, queen
 Food spread: scattered, clustered, corners, center, perimeter
+Video: --video enables MP4 recording (requires: pip install imageio imageio-ffmpeg)
         """
     )
 
@@ -1642,11 +1859,23 @@ Food spread: scattered, clustered, corners, center, perimeter
     parser.add_argument("--hoppers", type=int, help="Number of hopper scout drones")
     parser.add_argument("--hop-distance", type=int, help="How far hoppers jump (default: 5)")
 
+    # Queen position arguments
+    parser.add_argument("--queen-x", type=int, help="Queen X position (default: 10)")
+    parser.add_argument("--queen-y", type=int, help="Queen Y position (default: 10)")
+
     # Recording arguments
     parser.add_argument("--record", action="store_true",
         help="Enable keyframe recording for playback")
     parser.add_argument("--keyframe-interval", type=float, default=1.0,
         help="Seconds between keyframes (default: 1.0)")
+
+    # Video recording arguments
+    parser.add_argument("--video", action="store_true",
+        help="Record simulation as MP4 video")
+    parser.add_argument("--video-fps", type=int, default=10,
+        help="Video frames per second (default: 10)")
+    parser.add_argument("--video-resolution", type=int, default=800,
+        help="Video resolution in pixels (default: 800x800)")
 
     args = parser.parse_args()
 
@@ -1720,6 +1949,16 @@ Food spread: scattered, clustered, corners, center, perimeter
             config["hoppers"] = {}
         config["hoppers"]["hop_distance"] = args.hop_distance
 
+    # Queen position overrides
+    if args.queen_x is not None:
+        if "queen" not in config:
+            config["queen"] = {}
+        config["queen"]["x"] = args.queen_x
+    if args.queen_y is not None:
+        if "queen" not in config:
+            config["queen"] = {}
+        config["queen"]["y"] = args.queen_y
+
     # Recording configuration overrides
     if args.record:
         if "recording" not in config:
@@ -1729,6 +1968,14 @@ Food spread: scattered, clustered, corners, center, perimeter
         if "recording" not in config:
             config["recording"] = {}
         config["recording"]["keyframe_interval"] = args.keyframe_interval
+
+    # Video configuration overrides
+    if args.video:
+        if "recording" not in config:
+            config["recording"] = {}
+        config["recording"]["video_enabled"] = True
+        config["recording"]["video_fps"] = args.video_fps
+        config["recording"]["video_resolution"] = (args.video_resolution, args.video_resolution)
 
     # Run simulation
     sim = Simulation(config)
