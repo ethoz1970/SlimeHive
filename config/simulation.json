@@ -47,5 +47,12 @@
         "decay_interval": 10,
         "desperate_threshold": 20,
         "death_mode": "no"
+    },
+    "hoppers": {
+        "count": 0,
+        "hop_distance": 15,
+        "hunger_decay_multiplier": 0.25,
+        "ghost_deposit_multiplier": 10.0,
+        "cooldown_ticks": 50
     }
 }

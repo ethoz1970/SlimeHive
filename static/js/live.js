@@ -49,15 +49,18 @@ async function fetchState() {
         drawMap(ctx, data.grid, data.ghost_grid);
         drawBoundary(ctx, data.boundary);
         drawFood(ctx, data.food_sources);
+        drawDeathMarkers(ctx, data.death_markers);
+        drawFoodMarkers(ctx, data.food_markers);
+        drawSmellMarkers(ctx, data.smell_markers);
         drawQueen(ctx);
         drawSentinel(ctx);
 
         if (window === "live") {
-            drawDrones(data.drones);
+            drawDrones(data.drones, false, data.dead_drones);
         } else {
             // Fetch and draw history
             fetchHistory(window);
-            drawDrones(data.drones, true);
+            drawDrones(data.drones, true, data.dead_drones);
         }
 
         // Update parameters panel
@@ -388,8 +391,9 @@ function drawHistoryTrails(history) {
  * Draw drones on the map
  * @param {Object} drones - Drone data {id: {x, y, rssi, last_seen, trail}}
  * @param {boolean} historyMode - If true, skip live trails
+ * @param {Object} deadDrones - Dead drone data for registry display
  */
-function drawDrones(drones, historyMode = false) {
+function drawDrones(drones, historyMode = false, deadDrones = {}) {
     const now = Date.now() / 1000;
     let activeCount = 0;
 
@@ -421,22 +425,45 @@ function drawDrones(drones, historyMode = false) {
         // Get trail for visualization modes that need it
         const trail = drone.trail || [[drone.x, drone.y]];
 
-        // Draw based on visualization mode
-        switch (vizMode) {
-            case 'fuzzy':
-                drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
-                break;
-            case 'hard':
-                drawHardDrone(ctx, canvasX, canvasY, color, 8);
-                break;
-            case 'ghost':
-                drawGhostDrone(ctx, trail, hue);
-                break;
-            case 'heat':
-                drawHeatTrail(ctx, trail, hue);
-                break;
-            default:
-                drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+        // Check if this is a hopper
+        const isHopper = drone.type === "hopper";
+
+        // Draw based on drone type and visualization mode
+        if (isHopper) {
+            // Hoppers are always cyan triangles
+            drawHopper(ctx, canvasX, canvasY, 10, alpha);
+
+            // Draw hopper jump trail (dotted line)
+            if (trail.length > 1) {
+                ctx.beginPath();
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+                ctx.setLineDash([3, 3]);
+                ctx.lineWidth = 2;
+                ctx.moveTo(trail[0][0] * scale + scale / 2, (gridSize - 1 - trail[0][1]) * scale + scale / 2);
+                for (let i = 1; i < trail.length; i++) {
+                    ctx.lineTo(trail[i][0] * scale + scale / 2, (gridSize - 1 - trail[i][1]) * scale + scale / 2);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        } else {
+            // Regular drones - draw based on visualization mode
+            switch (vizMode) {
+                case 'fuzzy':
+                    drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+                    break;
+                case 'hard':
+                    drawHardDrone(ctx, canvasX, canvasY, color, 8);
+                    break;
+                case 'ghost':
+                    drawGhostDrone(ctx, trail, hue);
+                    break;
+                case 'heat':
+                    drawHeatTrail(ctx, trail, hue);
+                    break;
+                default:
+                    drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+            }
         }
 
         // Draw carrying indicator (green glow) for FEED_QUEEN mode (skip for heat mode)
@@ -476,7 +503,7 @@ function drawDrones(drones, historyMode = false) {
     // Throttled updates
     tickCounter++;
     if (tickCounter % 10 === 0) {
-        updateDroneList(drones);
+        updateDroneList(drones, deadDrones);
     }
     if (tickCounter % 50 === 0) {
         updateDroneFilter(Object.keys(drones));
@@ -486,13 +513,16 @@ function drawDrones(drones, historyMode = false) {
 /**
  * Update drone registry list
  * Resorts every 30 seconds, moving inactive drones (no signal in 30s) to bottom
+ * Dead drones appear at the very bottom in red
  * @param {Object} drones - Drone data
+ * @param {Object} deadDrones - Dead drone data
  */
-function updateDroneList(drones) {
+function updateDroneList(drones, deadDrones = {}) {
     const list = document.getElementById('drone-registry');
     list.innerHTML = '';
     const now = Date.now() / 1000;
     const droneIds = Object.keys(drones);
+    const deadIds = Object.keys(deadDrones || {});
 
     // Re-sort every 30 seconds
     if (now - lastDroneSort >= 30) {
@@ -520,10 +550,11 @@ function updateDroneList(drones) {
                 sortedDroneOrder.push(id);
             }
         }
-        // Remove drones that no longer exist
+        // Remove drones that no longer exist (but not dead ones)
         sortedDroneOrder = sortedDroneOrder.filter(id => droneIds.includes(id));
     }
 
+    // Display live drones
     for (const id of sortedDroneOrder) {
         const drone = drones[id];
         if (!drone) continue;
@@ -533,10 +564,19 @@ function updateDroneList(drones) {
         item.style.marginBottom = '4px';
         const hue = stringToHue(id);
 
+        // Check if hopper
+        const isHopper = drone.type === "hopper";
+
         // Dim inactive drones
         const isActive = diff <= 30;
         const lightness = isActive ? 60 : 35;
-        item.style.color = `hsl(${hue}, 100%, ${lightness}%)`;
+
+        // Hoppers are cyan, regular drones use their hue
+        if (isHopper) {
+            item.style.color = isActive ? '#0ff' : '#066';
+        } else {
+            item.style.color = `hsl(${hue}, 100%, ${lightness}%)`;
+        }
 
         // Build hunger display with color coding
         let hungerText = '';
@@ -551,13 +591,42 @@ function updateDroneList(drones) {
             hungerText = ` <span style="color:#0f0">H:${hunger}%</span>`;
         }
 
-        // Show carrying status for FEED_QUEEN mode
-        let statusText = `> [${id}]${hungerText} RSSI:${drone.rssi}dB`;
+        // Show status based on drone type
+        let statusText;
+        if (isHopper) {
+            statusText = `> [${id}]${hungerText} <span style="color:#0ff">SCOUTING</span>`;
+        } else {
+            statusText = `> [${id}]${hungerText} RSSI:${drone.rssi}dB`;
+        }
         if (drone.state === "carrying") {
             statusText = `> [${id}]${hungerText} <span style="color:#00ff64">CARRYING</span>`;
         }
         item.innerHTML = statusText;
         list.appendChild(item);
+    }
+
+    // Display dead drones at the bottom in red
+    if (deadIds.length > 0) {
+        // Add separator if there are dead drones
+        const separator = document.createElement('div');
+        separator.style.borderTop = '1px solid #600';
+        separator.style.margin = '6px 0';
+        list.appendChild(separator);
+
+        for (const id of deadIds.sort()) {
+            const drone = deadDrones[id];
+            if (!drone) continue;
+
+            const item = document.createElement('div');
+            item.style.marginBottom = '4px';
+            item.style.color = '#f00';
+
+            const isHopper = drone.type === "hopper";
+            const typeLabel = isHopper ? 'HOPPER' : 'DRONE';
+
+            item.innerHTML = `> [${id}] <span style="font-weight:bold">☠ DEAD</span> <span style="color:#888">(${typeLabel})</span>`;
+            list.appendChild(item);
+        }
     }
 }
 

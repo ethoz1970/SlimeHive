@@ -15,7 +15,12 @@ import time
 import os
 import csv
 import argparse
+import gzip
+import copy
 from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.colors import LinearSegmentedColormap
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,15 +61,121 @@ DEFAULT_CONFIG = {
     },
     "recording": {
         "enabled": False,
-        "output_dir": "analysis/sessions"
+        "output_dir": "analysis/sessions",
+        "save_screenshot": True
     },
     "hunger": {
         "enabled": True,
         "decay_interval": 10,  # Hunger decreases every N ticks (~33 seconds at 30 Hz)
         "desperate_threshold": 20,  # Below this, drone becomes desperate
         "death_mode": "no"  # "yes" = die, "no" = freeze only, "respawn" = die and respawn at queen
+    },
+    "hoppers": {
+        "count": 0,
+        "hop_distance": 15,
+        "hunger_decay_multiplier": 0.25,  # 4x slower hunger decay
+        "ghost_deposit_multiplier": 10.0,  # 10x larger ghost deposit on food find
+        "cooldown_ticks": 50  # Ticks between jumps
     }
 }
+
+
+class SimulationRecorder:
+    """Records simulation keyframes for playback"""
+
+    def __init__(self, keyframe_interval=1.0):
+        self.keyframe_interval = keyframe_interval
+        self.keyframes = []
+        self.events = []
+        self.metadata = {}
+        self.initial_state = {}
+        self.start_time = None
+        self.last_keyframe_time = -999
+
+    def start(self, sim):
+        """Initialize recording"""
+        self.start_time = time.time()
+        self.metadata = {
+            "timestamp": int(self.start_time),
+            "tick_rate": sim.config["simulation"]["tick_rate"],
+            "drone_count": sim.config["drones"]["count"],
+            "mode": sim.config["drones"]["behavior_mode"],
+            "grid_size": sim.grid_size,
+            "food_enabled": sim.config.get("food", {}).get("enabled", False),
+            "hunger_enabled": sim.config.get("hunger", {}).get("enabled", True)
+        }
+        self.initial_state = {
+            "food_sources": copy.deepcopy(sim.food_sources),
+            "queen_pos": list(sim.queen_pos),
+            "boundary": {
+                "min_x": sim.margin, "min_y": sim.margin,
+                "max_x": sim.grid_size - sim.margin,
+                "max_y": sim.grid_size - sim.margin
+            }
+        }
+
+    def record_tick(self, sim, elapsed_time, tick):
+        """Capture keyframe if interval elapsed"""
+        if elapsed_time - self.last_keyframe_time >= self.keyframe_interval:
+            self._capture_keyframe(sim, elapsed_time, tick)
+            self.last_keyframe_time = elapsed_time
+
+    def _capture_keyframe(self, sim, elapsed_time, tick):
+        """Capture current state as keyframe"""
+        drones = {}
+        for did, d in sim.drones.items():
+            drones[did] = {
+                "x": d["x"], "y": d["y"],
+                "hunger": d.get("hunger", 100),
+                "state": d.get("state", "searching"),
+                "type": d.get("type", "worker")
+            }
+
+        food_state = []
+        for f in sim.food_sources:
+            food_state.append({
+                "id": f["id"],
+                "amount": round(f["amount"], 1),
+                "consumed": f["consumed"]
+            })
+
+        self.keyframes.append({
+            "t": round(elapsed_time, 2),
+            "tick": tick,
+            "drones": drones,
+            "food_state": food_state,
+            "metrics": {
+                "queen_food": round(sim.queen_food, 1),
+                "trips_completed": sim.trips_completed,
+                "drone_count": len(sim.drones)
+            }
+        })
+
+    def record_event(self, event_type, elapsed_time, **data):
+        """Record discrete event"""
+        self.events.append({"t": round(elapsed_time, 2), "type": event_type, **data})
+
+    def save(self, sim, filepath):
+        """Save recording to file"""
+        self.metadata["duration_seconds"] = round(time.time() - self.start_time, 1)
+
+        recording = {
+            "version": "1.0",
+            "metadata": self.metadata,
+            "initial_state": self.initial_state,
+            "keyframes": self.keyframes,
+            "events": self.events,
+            "final_grids": {
+                "ghost_grid": sim.ghost_grid.tolist()
+            }
+        }
+
+        json_str = json.dumps(recording, separators=(',', ':'))
+
+        with gzip.open(filepath, 'wt', encoding='utf-8') as f:
+            f.write(json_str)
+
+        print(f"    Recording saved: {filepath}")
 
 
 def deep_merge(base, override):
@@ -110,6 +221,18 @@ class Simulation:
         self.queen_food = 0
         self.trips_completed = 0
 
+        # Death markers (where drones died)
+        self.death_markers = []
+
+        # Food markers (where hoppers found food)
+        self.food_markers = []
+
+        # Smell markers (where hoppers detected food nearby but didn't eat)
+        self.smell_markers = []
+
+        # Dead drones (for registry display)
+        self.dead_drones = {}
+
         # Metrics
         self.metrics_history = []
         self.start_time = None
@@ -120,6 +243,9 @@ class Simulation:
         # Live config tracking
         self.last_config_check = 0
         self.config_check_interval = 0.5  # Check every 0.5 seconds
+
+        # Recording
+        self.recorder = None
 
     def load_live_config(self):
         """Load live config changes from dashboard"""
@@ -577,7 +703,45 @@ class Simulation:
                 "state": "searching",  # For FEED_QUEEN: searching, carrying
                 "carrying": 0,  # Amount of food being carried
                 "hunger": 100,  # Current hunger level (0-100)
-                "max_hunger": 100  # Maximum hunger
+                "max_hunger": 100,  # Maximum hunger
+                "type": "worker"  # Drone type: worker or hopper
+            }
+
+    def spawn_hoppers(self):
+        """Spawn hopper scout drones"""
+        hopper_config = self.config.get("hoppers", {})
+        count = hopper_config.get("count", 0)
+
+        if count == 0:
+            return
+
+        qx, qy = self.queen_pos
+
+        for i in range(count):
+            hid = f"H-{i:03d}"
+
+            # Spawn near queen
+            x = qx + np.random.randint(-3, 4)
+            y = qy + np.random.randint(-3, 4)
+
+            # Keep within bounds
+            x = max(self.margin, min(self.grid_size - self.margin, x))
+            y = max(self.margin, min(self.grid_size - self.margin, y))
+
+            self.drones[hid] = {
+                "x": int(x),
+                "y": int(y),
+                "vx": 0,
+                "vy": 0,
+                "trail": [],
+                "rssi": -50,
+                "last_seen": time.time(),
+                "state": "scouting",
+                "carrying": 0,
+                "hunger": 100,
+                "max_hunger": 100,
+                "type": "hopper",
+                "hop_cooldown": 0
             }
 
     def spawn_food(self):
@@ -648,7 +812,7 @@ class Simulation:
             })
 
     def detect_food(self, drone, detection_radius=None):
-        """Find food sources within detection radius of drone"""
+        """Find food sources within detection radius of drone (measured from food edge)"""
         food_config = self.config.get("food", {})
         if detection_radius is None:
             detection_radius = food_config.get("detection_radius", 20)
@@ -660,11 +824,13 @@ class Simulation:
             if food["consumed"]:
                 continue
 
-            dist = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
-            if dist <= detection_radius:
+            dist_to_center = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
+            dist_to_edge = max(0, dist_to_center - food["radius"])
+
+            if dist_to_edge <= detection_radius:
                 detected.append({
                     "food": food,
-                    "distance": dist,
+                    "distance": dist_to_edge,
                     "direction_x": food["x"] - dx,
                     "direction_y": food["y"] - dy
                 })
@@ -672,7 +838,7 @@ class Simulation:
         return sorted(detected, key=lambda f: f["distance"])
 
     def consume_food(self, drone):
-        """Drone consumes nearby food"""
+        """Drone consumes nearby food (within 1 cell of food edge)"""
         food_config = self.config.get("food", {})
         consumption_rate = food_config.get("consumption_rate", 0.5)
 
@@ -682,11 +848,12 @@ class Simulation:
             if food["consumed"]:
                 continue
 
-            dist = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
+            dist_to_center = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
+            dist_to_edge = max(0, dist_to_center - food["radius"])
 
-            # Within consumption radius
-            if dist <= food["radius"] + 1:
-                consume_amount = consumption_rate * (1 - dist / (food["radius"] + 2))
+            # Within 1 cell of food edge
+            if dist_to_edge <= 1:
+                consume_amount = consumption_rate * (1 - dist_to_edge / 2)
                 food["amount"] -= consume_amount
 
                 if food["amount"] <= 0:
@@ -778,6 +945,102 @@ class Simulation:
         self.hive_grid[new_x][new_y] = min(255, self.hive_grid[new_x][new_y] + deposit)
         self.ghost_grid[new_x][new_y] = min(255, self.ghost_grid[new_x][new_y] + ghost_deposit)
 
+    def update_hopper(self, drone_id):
+        """Update a hopper scout drone - jumps long distances looking for food"""
+        drone = self.drones[drone_id]
+        hopper_config = self.config.get("hoppers", {})
+        hop_distance = hopper_config.get("hop_distance", 5)
+        cooldown_ticks = hopper_config.get("cooldown_ticks", 3)
+        ghost_multiplier = hopper_config.get("ghost_deposit_multiplier", 10.0)
+
+        # Starving hoppers freeze
+        hunger_config = self.config.get("hunger", {})
+        if hunger_config.get("enabled", True) and drone.get("hunger", 100) <= 0:
+            if np.random.random() > 0.1:
+                return
+
+        # Cooldown check - hopper rests between jumps
+        if drone.get("hop_cooldown", 0) > 0:
+            drone["hop_cooldown"] -= 1
+            return
+
+        # Pick random direction and jump
+        angle = np.random.random() * 2 * np.pi
+        dx = int(np.cos(angle) * hop_distance)
+        dy = int(np.sin(angle) * hop_distance)
+
+        # Calculate new position
+        new_x = max(self.margin, min(self.grid_size - self.margin, drone["x"] + dx))
+        new_y = max(self.margin, min(self.grid_size - self.margin, drone["y"] + dy))
+
+        # Update velocity (for trail visualization)
+        drone["vx"] = new_x - drone["x"]
+        drone["vy"] = new_y - drone["y"]
+
+        # Update position
+        drone["x"] = new_x
+        drone["y"] = new_y
+        drone["last_seen"] = time.time()
+        drone["hop_cooldown"] = cooldown_ticks
+
+        # Update trail (hoppers have longer trails to show jumps)
+        drone["trail"].append([new_x, new_y])
+        if len(drone["trail"]) > 20:
+            drone["trail"].pop(0)
+
+        # Check if hopper can smell food nearby
+        nearby_food = self.detect_food(drone, detection_radius=hop_distance + 2)
+
+        # Check if landed near food and can eat
+        if self.consume_food(drone):
+            # Actually ate food! Reset hunger and drop beacon
+            drone["hunger"] = 100
+
+            base_ghost = self.config["pheromones"]["ghost_deposit"]
+            beacon_deposit = base_ghost * ghost_multiplier
+
+            # Add visual food marker (yellow X) only when actually eating
+            self.food_markers.append({
+                "x": new_x,
+                "y": new_y,
+                "drone_id": drone_id,
+                "tick": self.tick_counter
+            })
+
+            # Deposit beacon at current position
+            self.ghost_grid[new_x][new_y] = min(255, self.ghost_grid[new_x][new_y] + beacon_deposit)
+
+            # Also deposit in surrounding cells for visibility
+            for ox in range(-2, 3):
+                for oy in range(-2, 3):
+                    bx = max(0, min(self.grid_size - 1, new_x + ox))
+                    by = max(0, min(self.grid_size - 1, new_y + oy))
+                    falloff = beacon_deposit * (1 - (abs(ox) + abs(oy)) / 6)
+                    self.ghost_grid[bx][by] = min(255, self.ghost_grid[bx][by] + falloff)
+        elif nearby_food:
+            # Smelled food but didn't eat - add white X marker
+            self.smell_markers.append({
+                "x": new_x,
+                "y": new_y,
+                "drone_id": drone_id,
+                "tick": self.tick_counter,
+                "distance": nearby_food[0]["distance"]
+            })
+
+            # Drop 25% strength ghost deposit to guide other drones
+            base_ghost = self.config["pheromones"]["ghost_deposit"]
+            smell_deposit = base_ghost * ghost_multiplier * 0.25
+
+            self.ghost_grid[new_x][new_y] = min(255, self.ghost_grid[new_x][new_y] + smell_deposit)
+
+            # Smaller spread for smell markers
+            for ox in range(-1, 2):
+                for oy in range(-1, 2):
+                    bx = max(0, min(self.grid_size - 1, new_x + ox))
+                    by = max(0, min(self.grid_size - 1, new_y + oy))
+                    falloff = smell_deposit * (1 - (abs(ox) + abs(oy)) / 4)
+                    self.ghost_grid[bx][by] = min(255, self.ghost_grid[bx][by] + falloff)
+
     def tick(self):
         """Run one simulation tick"""
         # Check for live config updates from dashboard
@@ -796,23 +1059,49 @@ class Simulation:
         hunger_config = self.config.get("hunger", {})
         hunger_enabled = hunger_config.get("enabled", True)
         hunger_decay_interval = hunger_config.get("decay_interval", 10)
+        hopper_config = self.config.get("hoppers", {})
+        hopper_hunger_mult = hopper_config.get("hunger_decay_multiplier", 0.25)
 
         # Apply hunger decay to all drones
         if hunger_enabled and self.tick_counter % hunger_decay_interval == 0:
             for drone in self.drones.values():
-                drone["hunger"] = max(0, drone.get("hunger", 100) - 1)
+                if drone.get("type") == "hopper":
+                    # Hoppers decay hunger slower (probabilistic)
+                    if np.random.random() < hopper_hunger_mult:
+                        drone["hunger"] = max(0, drone.get("hunger", 100) - 1)
+                else:
+                    drone["hunger"] = max(0, drone.get("hunger", 100) - 1)
 
         # Handle drone death/respawn based on death_mode
         death_mode = hunger_config.get("death_mode", "no")
         if hunger_enabled and death_mode != "no":
-            dead_drones = [did for did, d in self.drones.items() if d.get("hunger", 100) <= 0]
-            for drone_id in dead_drones:
+            dead_drones = [(did, d) for did, d in self.drones.items() if d.get("hunger", 100) <= 0]
+            for drone_id, drone in dead_drones:
+                # Record death location
+                self.death_markers.append({
+                    "x": drone["x"],
+                    "y": drone["y"],
+                    "drone_id": drone_id,
+                    "tick": self.tick_counter,
+                    "type": drone.get("type", "worker")
+                })
+
+                # Record death event for playback
+                if self.recorder:
+                    elapsed = time.time() - self.start_time if self.start_time else 0
+                    self.recorder.record_event("death", elapsed,
+                        drone=drone_id, x=drone["x"], y=drone["y"])
+
                 if death_mode == "yes":
-                    # Permanent death - remove drone
+                    # Permanent death - move to dead_drones for registry display
+                    drone["dead"] = True
+                    drone["death_tick"] = self.tick_counter
+                    self.dead_drones[drone_id] = drone.copy()
                     del self.drones[drone_id]
                 elif death_mode == "respawn":
-                    # Respawn at queen with full hunger
+                    # Respawn at queen with full hunger, preserving type
                     qx, qy = self.queen_pos
+                    drone_type = drone.get("type", "worker")
                     self.drones[drone_id] = {
                         "x": qx + np.random.randint(-2, 3),
                         "y": qy + np.random.randint(-2, 3),
@@ -821,18 +1110,26 @@ class Simulation:
                         "trail": [],
                         "rssi": -50,
                         "last_seen": time.time(),
-                        "state": "searching",
+                        "state": "scouting" if drone_type == "hopper" else "searching",
                         "carrying": 0,
                         "hunger": 100,
-                        "max_hunger": 100
+                        "max_hunger": 100,
+                        "type": drone_type,
+                        "hop_cooldown": 0 if drone_type == "hopper" else None
                     }
 
         # Update all drones
         for drone_id in list(self.drones.keys()):
-            self.update_drone(drone_id)
             drone = self.drones[drone_id]
 
-            if "FEED_QUEEN" in modes and food_enabled:
+            # Route to correct update method based on type
+            if drone.get("type") == "hopper":
+                self.update_hopper(drone_id)
+            else:
+                self.update_drone(drone_id)
+
+            # Skip FEED_QUEEN logic for hoppers (they're scouts, not carriers)
+            if "FEED_QUEEN" in modes and food_enabled and drone.get("type") != "hopper":
                 # FEED_QUEEN mode: pickup and dropoff logic
                 if drone.get("state") == "searching":
                     # Check if at food edge - pickup food
@@ -864,8 +1161,9 @@ class Simulation:
                         drone["state"] = "searching"
                         self.trips_completed += 1
 
-            elif food_enabled and "FEED_QUEEN" not in modes:
+            elif food_enabled and "FEED_QUEEN" not in modes and drone.get("type") != "hopper":
                 # FORAGE mode - consume food in place (only if NOT in FEED_QUEEN mode)
+                # Hoppers handle eating in update_hopper()
                 if self.consume_food(drone):
                     drone["hunger"] = 100  # Reset hunger on food consumption
                     # Deposit extra pheromones near food (recruitment)
@@ -912,6 +1210,10 @@ class Simulation:
             "ghost_grid": self.ghost_grid.tolist(),
             "drones": {k: {**v, "trail": v.get("trail", [])} for k, v in self.drones.items()},
             "food_sources": self.food_sources,
+            "death_markers": self.death_markers,
+            "food_markers": self.food_markers,
+            "smell_markers": self.smell_markers,
+            "dead_drones": self.dead_drones,
             "queen": {
                 "x": self.queen_pos[0],
                 "y": self.queen_pos[1],
@@ -970,6 +1272,134 @@ class Simulation:
 
         print(f"    State exported: {filename}")
 
+    def render_final_map_image(self):
+        """Render and save a PNG screenshot of the final map state"""
+        # Create screenshots directory
+        screenshots_dir = os.path.join(BASE_DIR, "analysis", "screenshots")
+        os.makedirs(screenshots_dir, exist_ok=True)
+
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        mode = self.config["drones"]["behavior_mode"].replace(",", "-")
+        count = self.config["drones"]["count"]
+        filename = os.path.join(screenshots_dir, f"map_{mode}_{count}drones_{timestamp}.png")
+
+        # Create figure with 800x800 pixels
+        dpi = 100
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=dpi)
+
+        # 1. Black background
+        ax.set_facecolor('black')
+
+        # 2. Pheromone heatmap - combine ghost_grid for visualization
+        # Create custom colormap: black → red → orange → yellow → white
+        colors = [
+            (0.0, 0.0, 0.0),      # Black at 0
+            (1.0, 0.0, 0.0),      # Red at 0.33
+            (1.0, 0.78, 0.0),     # Orange/Yellow at 0.66
+            (1.0, 1.0, 1.0)       # White at 1.0
+        ]
+        cmap = LinearSegmentedColormap.from_list('pheromone', colors, N=256)
+
+        # Normalize ghost_grid for display (transpose to match canvas orientation)
+        grid_max = max(self.ghost_grid.max(), 1)
+        normalized_grid = self.ghost_grid.T / grid_max
+
+        ax.imshow(normalized_grid, cmap=cmap, origin='lower', extent=[0, self.grid_size, 0, self.grid_size])
+
+        # 3. Operational boundary - dashed rectangle (10,10) to (90,90)
+        boundary_rect = patches.Rectangle(
+            (self.margin, self.margin),
+            self.grid_size - 2 * self.margin,
+            self.grid_size - 2 * self.margin,
+            linewidth=1,
+            edgecolor='white',
+            facecolor='none',
+            linestyle='--',
+            alpha=0.5
+        )
+        ax.add_patch(boundary_rect)
+
+        # 4. Food sources - colored squares based on consumption state
+        for food in self.food_sources:
+            if food["consumed"]:
+                color = 'gray'
+                alpha = 0.5
+            else:
+                # Green to red based on remaining amount
+                ratio = food["amount"] / food["max_amount"]
+                color = (1 - ratio, ratio, 0)  # Red when low, green when full
+                alpha = 0.8
+
+            food_rect = patches.Rectangle(
+                (food["x"] - food["radius"], food["y"] - food["radius"]),
+                food["radius"] * 2,
+                food["radius"] * 2,
+                linewidth=1,
+                edgecolor='white',
+                facecolor=color,
+                alpha=alpha
+            )
+            ax.add_patch(food_rect)
+
+        # 5. Death markers - red X marks at drone death locations
+        for marker in self.death_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='red', markersize=6, markeredgewidth=2)
+
+        # 6. Food markers - yellow X marks where hoppers found food
+        for marker in self.food_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='yellow', markersize=5, markeredgewidth=1.5)
+
+        # 7. Smell markers - white X marks where hoppers detected food
+        for marker in self.smell_markers:
+            ax.plot(marker["x"], marker["y"], 'x', color='white', markersize=4, markeredgewidth=1, alpha=0.7)
+
+        # 8. Queen - white diamond at (10,10)
+        qx, qy = self.queen_pos
+        ax.plot(qx, qy, 'D', color='white', markersize=10, markeredgecolor='gold', markeredgewidth=2)
+
+        # 9. Sentinel - blue triangle at (90,90)
+        sentinel_x = self.grid_size - self.margin
+        sentinel_y = self.grid_size - self.margin
+        ax.plot(sentinel_x, sentinel_y, '^', color='blue', markersize=8, markeredgecolor='cyan', markeredgewidth=1)
+
+        # 10. Drones - colored circles at current positions
+        for i, (drone_id, drone) in enumerate(self.drones.items()):
+            # Generate color based on drone ID (simple hash to HSL-like color)
+            hue = (hash(drone_id) % 360) / 360.0
+            # Convert hue to RGB (simplified)
+            if hue < 1/6:
+                r, g, b = 1, hue * 6, 0
+            elif hue < 2/6:
+                r, g, b = 1 - (hue - 1/6) * 6, 1, 0
+            elif hue < 3/6:
+                r, g, b = 0, 1, (hue - 2/6) * 6
+            elif hue < 4/6:
+                r, g, b = 0, 1 - (hue - 3/6) * 6, 1
+            elif hue < 5/6:
+                r, g, b = (hue - 4/6) * 6, 0, 1
+            else:
+                r, g, b = 1, 0, 1 - (hue - 5/6) * 6
+
+            # Different marker for hoppers vs workers
+            if drone.get("type") == "hopper":
+                ax.plot(drone["x"], drone["y"], 's', color=(r, g, b), markersize=6, markeredgecolor='white', markeredgewidth=0.5)
+            else:
+                ax.plot(drone["x"], drone["y"], 'o', color=(r, g, b), markersize=5, markeredgecolor='white', markeredgewidth=0.5)
+
+        # Configure axes
+        ax.set_xlim(0, self.grid_size)
+        ax.set_ylim(0, self.grid_size)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        # Save figure
+        plt.tight_layout(pad=0)
+        plt.savefig(filename, facecolor='black', edgecolor='none', bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+
+        print(f"    Screenshot saved: {filename}")
+
     def run(self):
         """Run the full simulation"""
         sim_config = self.config["simulation"]
@@ -988,12 +1418,14 @@ class Simulation:
         if "FEED_QUEEN" in modes and self.config["drones"].get("spawn_pattern") == "random":
             self.config["drones"]["spawn_pattern"] = "queen"
 
+        hopper_count = self.config.get("hoppers", {}).get("count", 0)
+
         print()
         print("=" * 60)
         print("    SLIMEHIVE ENHANCED SIMULATION")
         print("=" * 60)
         print(f"    Mode:       {mode}")
-        print(f"    Drones:     {drone_count}")
+        print(f"    Drones:     {drone_count}" + (f" + {hopper_count} hoppers" if hopper_count > 0 else ""))
         print(f"    Grid:       {self.grid_size}x{self.grid_size}")
         print(f"    Tick Rate:  {tick_rate} Hz")
         print(f"    Duration:   {duration}s ({total_ticks} ticks)")
@@ -1027,7 +1459,17 @@ class Simulation:
 
         # Spawn drones (at least 10 cells from food)
         self.spawn_drones()
+
+        # Spawn hopper scouts
+        self.spawn_hoppers()
+
         self.start_time = time.time()
+
+        # Start recording if enabled
+        if self.config.get("recording", {}).get("keyframe_recording", False):
+            keyframe_interval = self.config["recording"].get("keyframe_interval", 1.0)
+            self.recorder = SimulationRecorder(keyframe_interval)
+            self.recorder.start(self)
 
         # Simulation loop
         extinction = False
@@ -1076,6 +1518,11 @@ class Simulation:
                         print(f"{base_msg} | Food: {metrics['food_consumed_pct']:.0f}% consumed{hunger_info}")
                     else:
                         print(f"{base_msg} | Coverage: {metrics['coverage_percent']:5.1f}%{hunger_info}")
+
+            # Record keyframe for playback
+            if self.recorder:
+                elapsed = time.time() - self.start_time
+                self.recorder.record_tick(self, elapsed, tick)
 
             # Maintain tick rate
             elapsed = time.time() - tick_start
@@ -1130,6 +1577,20 @@ class Simulation:
         if self.config["recording"]["enabled"]:
             self.export_final_state()
 
+        # Save final map screenshot
+        if self.config["recording"].get("save_screenshot", True):
+            self.render_final_map_image()
+
+        # Save keyframe recording for playback
+        if self.recorder:
+            recordings_dir = os.path.join(BASE_DIR, "recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            mode = self.config["drones"]["behavior_mode"].replace(",", "-")
+            drone_count = self.config["drones"]["count"]
+            filename = f"sim_{mode}_{drone_count}drones_{timestamp}.slimehive"
+            self.recorder.save(self, os.path.join(recordings_dir, filename))
+
         print()
 
 
@@ -1162,6 +1623,7 @@ Food spread: scattered, clustered, corners, center, perimeter
     parser.add_argument("--grid-size", type=int, help="Grid size (NxN)")
     parser.add_argument("--save-state", action="store_true", help="Save final state as JSON")
     parser.add_argument("--no-live", action="store_true", help="Disable live dashboard updates")
+    parser.add_argument("--no-screenshot", action="store_true", help="Disable final map screenshot")
 
     # Food arguments
     parser.add_argument("--food-sources", type=int, help="Number of food sources (enables food)")
@@ -1175,6 +1637,16 @@ Food spread: scattered, clustered, corners, center, perimeter
     parser.add_argument("--no-hunger", action="store_true", help="Disable hunger system")
     parser.add_argument("--death-mode", type=str, choices=["yes", "no", "respawn"],
                         help="What happens when drones starve: yes=die, no=freeze, respawn=die and respawn at queen")
+
+    # Hopper arguments
+    parser.add_argument("--hoppers", type=int, help="Number of hopper scout drones")
+    parser.add_argument("--hop-distance", type=int, help="How far hoppers jump (default: 5)")
+
+    # Recording arguments
+    parser.add_argument("--record", action="store_true",
+        help="Enable keyframe recording for playback")
+    parser.add_argument("--keyframe-interval", type=float, default=1.0,
+        help="Seconds between keyframes (default: 1.0)")
 
     args = parser.parse_args()
 
@@ -1198,6 +1670,8 @@ Food spread: scattered, clustered, corners, center, perimeter
         config["recording"]["enabled"] = True
     if args.no_live:
         config["simulation"]["live_view"] = False
+    if args.no_screenshot:
+        config["recording"]["save_screenshot"] = False
 
     # Food configuration overrides
     if args.food_sources:
@@ -1235,6 +1709,26 @@ Food spread: scattered, clustered, corners, center, perimeter
         if "hunger" not in config:
             config["hunger"] = {}
         config["hunger"]["death_mode"] = args.death_mode
+
+    # Hopper configuration overrides
+    if args.hoppers:
+        if "hoppers" not in config:
+            config["hoppers"] = {}
+        config["hoppers"]["count"] = args.hoppers
+    if args.hop_distance:
+        if "hoppers" not in config:
+            config["hoppers"] = {}
+        config["hoppers"]["hop_distance"] = args.hop_distance
+
+    # Recording configuration overrides
+    if args.record:
+        if "recording" not in config:
+            config["recording"] = {}
+        config["recording"]["keyframe_recording"] = True
+    if args.keyframe_interval:
+        if "recording" not in config:
+            config["recording"] = {}
+        config["recording"]["keyframe_interval"] = args.keyframe_interval
 
     # Run simulation
     sim = Simulation(config)

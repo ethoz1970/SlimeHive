@@ -1,176 +1,226 @@
-# Playback Enhancement Plan
+# Plan: Save Final Map Image on Simulation End
 
-## Current Problem
-- Playback shows only a static snapshot of the archive
-- Play button is disabled when no matching flight log CSV exists
-- Old archives have no recorded flight data
-- Virtual drones weren't publishing to MQTT (just fixed)
-
-## Current Architecture
-```
-Archive (snapshot)     Flight Log (CSV)
-├── grid[][]           ├── timestamp
-├── ghost_grid[][]     ├── drone_id
-├── drones{}           ├── x, y
-│   ├── x, y           ├── intensity
-│   ├── trail[]        └── rssi
-│   └── last_seen
-└── mood, decay_rate
-```
-
-## Proposed Solution
-
-### Option A: Always Enable Playback with Fallback Simulation
-When no flight log exists, generate simulated movement based on archive data.
-
-**How it works:**
-1. If flight log exists → use real recorded data (current behavior)
-2. If no flight log → generate synthetic animation:
-   - Use drone positions from archive as starting points
-   - Simulate random walks or trail-based movement
-   - Animate pheromone grid decay over time
-   - Show "SIMULATED" indicator
-
-### Option B: Flight Log Selection List
-Instead of auto-matching, show a dropdown of all available flight logs and let user pick one to replay.
-
-**How it works:**
-1. Load any archive for the grid/pheromone state
-2. Show list of all flight logs (not just matching ones)
-3. User selects which session to replay
-4. Play selected flight log over the archive visualization
-
-## Recommended: Hybrid Approach (A + B)
-
-### Changes to Playback UI
-1. **Play button always enabled** - never disabled
-2. **Mode selector**:
-   - "RECORDED" - use matched flight log (if available)
-   - "SIMULATE" - generate movement from archive state
-   - Dropdown of all flight logs to manually select
-3. **Timeline shows**: data points for recorded, simulated duration for simulate mode
-4. **Visual indicator**: "SIMULATED" or "RECORDED" badge during playback
-
-### Implementation Steps
-
-1. **Modify `checkFlightLog()`**:
-   - Don't disable button if no match
-   - Set `playbackMode` variable: "recorded", "simulated", or "manual"
-   - Store list of all flight logs for dropdown
-
-2. **Add flight log dropdown**:
-   - Show all available flight logs
-   - Allow manual selection regardless of timestamp matching
-
-3. **Add `generateSimulatedData()` function**:
-   - Takes archive drones as input
-   - Generates N frames of simulated movement
-   - Drones do random walks from their positions
-   - Returns array matching flightData format
-
-4. **Modify `startPlayback()`**:
-   - If recorded mode: use flightData (current)
-   - If simulated mode: call generateSimulatedData()
-
-5. **Add visual indicators**:
-   - Badge showing "SIMULATED" vs "RECORDED"
-   - Different timeline color for simulated
-
-### Simulated Movement Algorithm
-```javascript
-function generateSimulatedData(drones, frameCount = 200) {
-    const data = [];
-    const positions = {};
-
-    // Initialize positions from archive
-    for (const [id, drone] of Object.entries(drones)) {
-        positions[id] = { x: drone.x, y: drone.y };
-    }
-
-    // Generate frames
-    for (let frame = 0; frame < frameCount; frame++) {
-        const timestamp = Date.now()/1000 + frame * 0.1;
-
-        for (const [id, pos] of Object.entries(positions)) {
-            // Random walk
-            pos.x += Math.floor(Math.random() * 3) - 1;
-            pos.y += Math.floor(Math.random() * 3) - 1;
-            pos.x = Math.max(0, Math.min(gridSize-1, pos.x));
-            pos.y = Math.max(0, Math.min(gridSize-1, pos.y));
-
-            data.push({
-                timestamp,
-                drone_id: id,
-                x: pos.x,
-                y: pos.y,
-                intensity: 50,
-                rssi: -50
-            });
-        }
-    }
-    return data;
-}
-```
-
-## Files to Modify
-- `dashboard_hud.py`: PLAYBACK_TEMPLATE section
-  - Add mode selector/dropdown
-  - Add generateSimulatedData() function
-  - Modify checkFlightLog() to not disable button
-  - Add visual indicators
-
-## Effort Estimate
-- Small/Medium change - mostly JavaScript in the playback template
+## Goal
+Automatically save a PNG image of the final map state when a simulation ends.
 
 ---
 
-# Plan: End Simulation When All Drones Die
+## Options
 
-## Goal
-End the simulation early if all drones die (when death_mode is "yes"), rather than continuing to run with zero drones.
+### Option A: Python-side Rendering (Recommended)
+Generate the image directly in Python using PIL/Pillow when simulation ends.
 
-## Changes Required
+**Pros:**
+- Works without dashboard running
+- Self-contained in simulate.py
+- No browser dependencies
 
-### 1. Modify `run()` in simulate.py
+**Cons:**
+- Need to replicate drawing logic in Python
+- May not be pixel-perfect match to dashboard
 
-Add a check after `self.tick()` in the simulation loop:
+### Option B: Dashboard-triggered Save
+Have the dashboard detect simulation end and save canvas as PNG.
 
-```python
-# Simulation loop
-for tick in range(total_ticks):
-    tick_start = time.time()
+**Pros:**
+- Exact visual match to dashboard
+- No code duplication
 
-    # Run simulation tick
-    self.tick()
+**Cons:**
+- Requires dashboard to be running
+- Need IPC between simulation and dashboard
 
-    # Check for extinction (all drones dead)
-    if len(self.drones) == 0:
-        print()
-        print("  !!! ALL DRONES HAVE DIED - SIMULATION ENDING !!!")
-        break
+### Option C: Headless Browser
+Use Puppeteer/Playwright to screenshot dashboard.
 
-    # ... rest of loop
+**Pros:**
+- Exact match
+
+**Cons:**
+- Heavy dependency
+- Complex setup
+
+---
+
+## Recommended: Option A (Python PIL)
+
+### Implementation
+
+#### 1. Add PIL dependency
+
+Already available in most Python environments, or:
+```bash
+pip install Pillow
 ```
 
-### 2. Update final report
-
-Add indication that simulation ended due to extinction vs normal completion:
+#### 2. Create `save_final_image()` method in Simulation class
 
 ```python
-# After the loop
-if len(self.drones) == 0:
-    print("    Ended:               EXTINCTION (all drones died)")
-else:
-    print("    Ended:               COMPLETED")
+from PIL import Image, ImageDraw
+
+def save_final_image(self, filename=None):
+    """Save final map state as PNG image"""
+    if filename is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        mode = self.config["drones"]["behavior_mode"]
+        filename = os.path.join(BASE_DIR, "analysis", "screenshots",
+                                f"final_{mode}_{timestamp}.png")
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    # Image size (match dashboard: 800x800)
+    size = 800
+    scale = size / self.grid_size
+
+    # Create black background
+    img = Image.new('RGB', (size, size), color='black')
+    draw = ImageDraw.Draw(img)
+
+    # Draw pheromone grid (ghost_grid)
+    for x in range(self.grid_size):
+        for y in range(self.grid_size):
+            ghost = self.ghost_grid[x][y]
+            if ghost > 10:
+                intensity = min(255, int(ghost))
+                alpha = intensity // 2
+                # White with varying intensity
+                px = int(x * scale)
+                py = int((self.grid_size - 1 - y) * scale)
+                draw.rectangle([px, py, px + scale, py + scale],
+                              fill=(intensity, intensity, intensity))
+
+    # Draw food sources
+    for food in self.food_sources:
+        px = int(food["x"] * scale)
+        py = int((self.grid_size - 1 - food["y"]) * scale)
+        radius = int(food["radius"] * scale)
+
+        if food["consumed"]:
+            # Gray outline for depleted
+            draw.rectangle([px - radius, py - radius, px + radius, py + radius],
+                          outline='#888888', width=2)
+        else:
+            # Color based on amount (green -> red)
+            ratio = food["amount"] / food["max_amount"]
+            r = int(255 * (1 - ratio))
+            g = int(255 * ratio)
+            draw.rectangle([px - radius, py - radius, px + radius, py + radius],
+                          fill=(r, g, 0), outline=(r//2, g//2, 0), width=2)
+
+    # Draw death markers (red X)
+    for marker in self.death_markers:
+        px = int(marker["x"] * scale)
+        py = int((self.grid_size - 1 - marker["y"]) * scale)
+        size_x = 12 if marker.get("type") == "hopper" else 6
+        draw.line([px - size_x, py - size_x, px + size_x, py + size_x], fill='red', width=2)
+        draw.line([px + size_x, py - size_x, px - size_x, py + size_x], fill='red', width=2)
+
+    # Draw food markers (yellow X)
+    for marker in self.food_markers:
+        px = int(marker["x"] * scale)
+        py = int((self.grid_size - 1 - marker["y"]) * scale)
+        draw.line([px - 10, py - 10, px + 10, py + 10], fill='yellow', width=3)
+        draw.line([px + 10, py - 10, px - 10, py + 10], fill='yellow', width=3)
+
+    # Draw smell markers (white X)
+    for marker in self.smell_markers:
+        px = int(marker["x"] * scale)
+        py = int((self.grid_size - 1 - marker["y"]) * scale)
+        draw.line([px - 6, py - 6, px + 6, py + 6], fill='white', width=2)
+        draw.line([px + 6, py - 6, px - 6, py + 6], fill='white', width=2)
+
+    # Draw Queen (white diamond)
+    qx = int(self.queen_pos[0] * scale)
+    qy = int((self.grid_size - 1 - self.queen_pos[1]) * scale)
+    draw.polygon([(qx, qy-8), (qx+8, qy), (qx, qy+8), (qx-8, qy)], fill='white')
+
+    # Draw remaining drones
+    for drone_id, drone in self.drones.items():
+        px = int(drone["x"] * scale)
+        py = int((self.grid_size - 1 - drone["y"]) * scale)
+
+        if drone.get("type") == "hopper":
+            # Cyan triangle for hoppers
+            draw.polygon([(px, py-8), (px+6, py+6), (px-6, py+6)], fill='cyan')
+        else:
+            # Circle for regular drones
+            draw.ellipse([px-4, py-4, px+4, py+4], fill='lime')
+
+    # Draw dead drones (dimmer)
+    for drone_id, drone in self.dead_drones.items():
+        px = int(drone["x"] * scale)
+        py = int((self.grid_size - 1 - drone["y"]) * scale)
+        draw.ellipse([px-3, py-3, px+3, py+3], fill='#440000')
+
+    # Save image
+    img.save(filename)
+    print(f"    Final image saved: {filename}")
+    return filename
 ```
+
+#### 3. Call from `run()` at end of simulation
+
+```python
+def run(self):
+    # ... simulation loop ...
+
+    # After final report
+    if self.config.get("save_image", True):
+        self.save_final_image()
+```
+
+#### 4. Add CLI argument
+
+```python
+parser.add_argument("--no-save-image", action="store_true",
+                    help="Don't save final map image")
+
+# In config application:
+if args.no_save_image:
+    config["save_image"] = False
+```
+
+---
 
 ## Files to Modify
-- `simulate.py`: Add extinction check in `run()` loop and final report
+
+1. **simulate.py**
+   - Add `from PIL import Image, ImageDraw` import
+   - Add `save_final_image()` method
+   - Call from `run()` after simulation ends
+   - Add CLI argument `--no-save-image`
+
+2. **requirements.txt** (if exists)
+   - Add `Pillow` if not already present
+
+---
+
+## Output Location
+
+Images saved to: `analysis/screenshots/final_{MODE}_{TIMESTAMP}.png`
+
+Example: `analysis/screenshots/final_FORAGE_2024-01-29_143052.png`
+
+---
 
 ## Testing
 
 ```bash
-python simulate.py --mode FORAGE --food-sources 0 --drones 5 --duration 30 --hunger-decay 2 --death-mode yes --no-live
+# Run simulation - image auto-saved
+python simulate.py --mode FORAGE --food-sources 3 --drones 10 --duration 30
+
+# Check output
+ls -la analysis/screenshots/
+
+# Disable image saving
+python simulate.py --mode FORAGE --drones 10 --no-save-image
 ```
 
-Expected: Simulation should end around tick 200 with extinction message instead of running full 30 seconds.
+---
+
+## Future Enhancements
+
+- Add boundary rectangle to image
+- Add text overlay with stats (drone count, food consumed, etc.)
+- Option to save at regular intervals (timelapse)
+- Save as animated GIF of simulation
