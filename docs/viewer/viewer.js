@@ -43,7 +43,7 @@ async function loadAvailableRecordings() {
         }
 
         listEl.innerHTML = recordings.map(r => `
-            <div class="recording-item" onclick="loadRecording('${r.browser_download_url}')">
+            <div class="recording-item" onclick="loadRecording('${r.url}')">
                 <div>${r.name}</div>
                 <div style="color: var(--dim); font-size: 0.9em;">${new Date(r.created_at).toLocaleString()}</div>
             </div>
@@ -59,7 +59,14 @@ async function loadRecording(url) {
 
     try {
         console.log('Fetching:', url);
-        const response = await fetch(url);
+
+        // Use Accept header for GitHub API URLs to get raw asset
+        const isGitHubApi = url.includes('api.github.com');
+        const fetchOptions = isGitHubApi
+            ? { headers: { 'Accept': 'application/octet-stream' } }
+            : {};
+
+        const response = await fetch(url, fetchOptions);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
