@@ -1451,7 +1451,7 @@ class Simulation:
         print("=" * 60)
         if self.config["simulation"].get("live_view", True):
             print("    Dashboard: http://localhost:5050")
-            print("    Run in another terminal: python dashboard_hud.py")
+            print("    Run in another terminal: python dashboard_virtual.py")
         print()
 
         # Spawn food first (so drones can avoid spawning near it)
