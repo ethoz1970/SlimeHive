@@ -214,6 +214,64 @@ def reset_hive():
     client.publish("hive/control/reset", "1")
     return "OK"
 
+# --- LIVE CONFIG ENDPOINT ---
+
+LIVE_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hive_config_live.json")
+
+@app.route('/config', methods=['POST'])
+def update_config():
+    """Update simulation config in real-time"""
+    try:
+        config = request.get_json()
+        if not config:
+            return jsonify({'error': 'No config data'}), 400
+
+        # Validate and sanitize config values
+        death_mode = config.get('death_mode', 'no')
+        if death_mode not in ['yes', 'no', 'respawn']:
+            death_mode = 'no'
+
+        live_config = {
+            'decay_rate': max(0.1, min(1.0, float(config.get('decay_rate', 0.95)))),
+            'deposit_amount': max(0, min(20, float(config.get('deposit_amount', 5.0)))),
+            'ghost_deposit': max(0, min(5, float(config.get('ghost_deposit', 0.5)))),
+            'detection_radius': max(5, min(50, int(config.get('detection_radius', 20)))),
+            'pheromone_boost': max(1, min(10, float(config.get('pheromone_boost', 3.0)))),
+            'death_mode': death_mode,
+            'timestamp': time.time()
+        }
+
+        # Write to file for simulation to pick up
+        with open(LIVE_CONFIG_FILE, 'w') as f:
+            json.dump(live_config, f)
+
+        print(f"/// CONFIG UPDATED: decay={live_config['decay_rate']}, deposit={live_config['deposit_amount']} ///")
+        return jsonify({'success': True, 'config': live_config})
+
+    except Exception as e:
+        print(f"Config Update Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/config', methods=['GET'])
+def get_config():
+    """Get current live config"""
+    try:
+        if os.path.exists(LIVE_CONFIG_FILE):
+            with open(LIVE_CONFIG_FILE, 'r') as f:
+                return jsonify(json.load(f))
+        else:
+            # Return defaults
+            return jsonify({
+                'decay_rate': 0.95,
+                'deposit_amount': 5.0,
+                'ghost_deposit': 0.5,
+                'detection_radius': 20,
+                'pheromone_boost': 3.0,
+                'death_mode': 'no'
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # --- PLAYBACK DASHBOARD ROUTES ---
 
 @app.route('/playback')

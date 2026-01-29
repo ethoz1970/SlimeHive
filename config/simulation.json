@@ -21,7 +21,7 @@
     "pheromones": {
         "deposit_amount": 5.0,
         "ghost_deposit": 0.5,
-        "decay_rate": 0.95
+        "decay_rate": 0.55
     },
     "metrics": {
         "enabled": true,
@@ -31,5 +31,21 @@
     "recording": {
         "enabled": false,
         "output_dir": "analysis/sessions"
+    },
+    "food": {
+        "enabled": false,
+        "sources": 5,
+        "amount": 100,
+        "spread": "scattered",
+        "radius": 3,
+        "consumption_rate": 0.5,
+        "detection_radius": 20,
+        "pheromone_boost": 3.0
+    },
+    "hunger": {
+        "enabled": true,
+        "decay_interval": 10,
+        "desperate_threshold": 20,
+        "death_mode": "no"
     }
 }

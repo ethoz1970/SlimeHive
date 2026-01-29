@@ -14,6 +14,15 @@ let tickCounter = 0;
 let previousDroneListJson = "";
 let lastDroneSort = 0;
 let sortedDroneOrder = [];
+let vizMode = 'fuzzy';  // Visualization mode: fuzzy, hard, ghost, heat
+let configUpdateLock = false;  // Prevents config inputs from being overwritten after apply
+
+/**
+ * Set visualization mode
+ */
+function setVizMode() {
+    vizMode = document.getElementById('viz-mode').value;
+}
 
 /**
  * Main polling loop - fetches state and updates display
@@ -39,6 +48,7 @@ async function fetchState() {
         // Draw the map layers
         drawMap(ctx, data.grid, data.ghost_grid);
         drawBoundary(ctx, data.boundary);
+        drawFood(ctx, data.food_sources);
         drawQueen(ctx);
         drawSentinel(ctx);
 
@@ -50,8 +60,195 @@ async function fetchState() {
             drawDrones(data.drones, true);
         }
 
+        // Update parameters panel
+        updateParametersPanel(data);
+
     } catch (e) {
         console.error("Fetch Error:", e);
+    }
+}
+
+/**
+ * Update parameters panel with simulation data
+ * @param {Object} data - State data from server
+ */
+function updateParametersPanel(data) {
+    // Mode
+    const modeEl = document.getElementById('param-mode');
+    if (modeEl) modeEl.innerText = data.sim_mode || data.mood || '--';
+
+    // Drone count
+    const dronesEl = document.getElementById('param-drones');
+    if (dronesEl) dronesEl.innerText = data.drones ? Object.keys(data.drones).length : '--';
+
+    // Grid size
+    const gridEl = document.getElementById('param-grid');
+    if (gridEl && data.grid) gridEl.innerText = `${data.grid.length}x${data.grid.length}`;
+
+    // Queen food (for FEED_QUEEN mode)
+    const queenFoodEl = document.getElementById('param-queen-food');
+    if (queenFoodEl) {
+        if (data.queen && data.queen.food !== undefined) {
+            queenFoodEl.innerText = data.queen.food.toFixed(1);
+            queenFoodEl.style.color = '#0f0';
+        } else {
+            queenFoodEl.innerText = '--';
+            queenFoodEl.style.color = '#0af';
+        }
+    }
+
+    // Trips completed
+    const tripsEl = document.getElementById('param-trips');
+    if (tripsEl) {
+        if (data.queen && data.queen.trips !== undefined) {
+            tripsEl.innerText = data.queen.trips;
+        } else {
+            tripsEl.innerText = '--';
+        }
+    }
+
+    // Food sources
+    const foodEl = document.getElementById('param-food-sources');
+    if (foodEl) {
+        if (data.food_sources && data.food_sources.length > 0) {
+            const active = data.food_sources.filter(f => !f.consumed).length;
+            foodEl.innerText = `${active}/${data.food_sources.length}`;
+            foodEl.style.color = active > 0 ? '#0f0' : '#f00';
+        } else {
+            foodEl.innerText = '--';
+            foodEl.style.color = '#0af';
+        }
+    }
+
+    // Update config inputs from server state (only if not focused)
+    if (data.live_config) {
+        const cfg = data.live_config;
+        updateConfigInput('cfg-decay-rate', cfg.decay_rate);
+        updateConfigInput('cfg-deposit-amount', cfg.deposit_amount);
+        updateConfigInput('cfg-ghost-deposit', cfg.ghost_deposit);
+        updateConfigInput('cfg-detection-radius', cfg.detection_radius);
+        updateConfigInput('cfg-pheromone-boost', cfg.pheromone_boost);
+        updateConfigInput('cfg-death-mode', cfg.death_mode);
+    }
+}
+
+/**
+ * Check if any config input is currently focused
+ */
+function isEditingConfig() {
+    const configInputs = [
+        'cfg-decay-rate',
+        'cfg-deposit-amount',
+        'cfg-ghost-deposit',
+        'cfg-detection-radius',
+        'cfg-pheromone-boost',
+        'cfg-death-mode'
+    ];
+    const activeId = document.activeElement ? document.activeElement.id : null;
+    return configInputs.includes(activeId);
+}
+
+/**
+ * Update config input if not editing any config and not locked
+ */
+function updateConfigInput(id, value) {
+    const el = document.getElementById(id);
+    if (el && value !== undefined && !configUpdateLock && !isEditingConfig()) {
+        el.value = value;
+    }
+}
+
+/**
+ * Apply configuration changes to simulation
+ */
+async function applyConfig() {
+    // Lock IMMEDIATELY to prevent race conditions
+    configUpdateLock = true;
+
+    // Now safely read the values
+    const config = {
+        decay_rate: parseFloat(document.getElementById('cfg-decay-rate').value),
+        deposit_amount: parseFloat(document.getElementById('cfg-deposit-amount').value),
+        ghost_deposit: parseFloat(document.getElementById('cfg-ghost-deposit').value),
+        detection_radius: parseInt(document.getElementById('cfg-detection-radius').value),
+        pheromone_boost: parseFloat(document.getElementById('cfg-pheromone-boost').value),
+        death_mode: document.getElementById('cfg-death-mode').value
+    };
+
+    try {
+        const response = await fetch('/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+
+        if (response.ok) {
+            // Flash the button green to confirm
+            const btn = document.getElementById('apply-config-btn');
+            btn.style.background = '#0f0';
+            btn.style.color = '#000';
+            btn.innerText = 'APPLIED!';
+            setTimeout(() => {
+                btn.style.background = '#020';
+                btn.style.color = '#0f0';
+                btn.innerText = 'APPLY';
+            }, 1000);
+
+            // Unlock after simulation has had time to pick up the new config
+            setTimeout(() => {
+                configUpdateLock = false;
+            }, 1000);
+        } else {
+            configUpdateLock = false;
+        }
+    } catch (e) {
+        console.error('Config apply error:', e);
+        configUpdateLock = false;
+    }
+}
+
+/**
+ * Reset configuration to defaults
+ */
+async function resetConfig() {
+    const defaults = {
+        decay_rate: 0.95,
+        deposit_amount: 5.0,
+        ghost_deposit: 0.5,
+        detection_radius: 20,
+        pheromone_boost: 3.0,
+        death_mode: 'no'
+    };
+
+    // Update input fields
+    document.getElementById('cfg-decay-rate').value = defaults.decay_rate;
+    document.getElementById('cfg-deposit-amount').value = defaults.deposit_amount;
+    document.getElementById('cfg-ghost-deposit').value = defaults.ghost_deposit;
+    document.getElementById('cfg-detection-radius').value = defaults.detection_radius;
+    document.getElementById('cfg-pheromone-boost').value = defaults.pheromone_boost;
+    document.getElementById('cfg-death-mode').value = defaults.death_mode;
+
+    try {
+        const response = await fetch('/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(defaults)
+        });
+
+        if (response.ok) {
+            // Flash the button to confirm
+            const btn = document.getElementById('reset-config-btn');
+            btn.style.background = '#f80';
+            btn.style.color = '#000';
+            btn.innerText = 'OK';
+            setTimeout(() => {
+                btn.style.background = '#200';
+                btn.style.color = '#f80';
+                btn.innerText = 'RST';
+            }, 1000);
+        }
+    } catch (e) {
+        console.error('Config reset error:', e);
     }
 }
 
@@ -218,14 +415,46 @@ function drawDrones(drones, historyMode = false) {
         }
 
         const color = `hsla(${hue}, 100%, ${lightness}%, ${alpha})`;
-
-        // Draw fuzzy pheromone-like drone
         const canvasX = drone.x * scale + scale / 2;
         const canvasY = (gridSize - 1 - drone.y) * scale + scale / 2;
-        drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
 
-        // Draw live trail (skip in history mode)
-        if (!historyMode && drone.trail && drone.trail.length > 1) {
+        // Get trail for visualization modes that need it
+        const trail = drone.trail || [[drone.x, drone.y]];
+
+        // Draw based on visualization mode
+        switch (vizMode) {
+            case 'fuzzy':
+                drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+                break;
+            case 'hard':
+                drawHardDrone(ctx, canvasX, canvasY, color, 8);
+                break;
+            case 'ghost':
+                drawGhostDrone(ctx, trail, hue);
+                break;
+            case 'heat':
+                drawHeatTrail(ctx, trail, hue);
+                break;
+            default:
+                drawFuzzyDrone(ctx, canvasX, canvasY, color, 12, 4);
+        }
+
+        // Draw carrying indicator (green glow) for FEED_QUEEN mode (skip for heat mode)
+        if (vizMode !== 'heat' && drone.state === "carrying" && drone.carrying > 0) {
+            // Bright green outer ring
+            ctx.beginPath();
+            ctx.arc(canvasX, canvasY, 8, 0, 2 * Math.PI);
+            ctx.strokeStyle = 'rgba(0, 255, 100, 0.9)';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // Small green square in center (the food)
+            ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
+            ctx.fillRect(canvasX - 3, canvasY - 3, 6, 6);
+        }
+
+        // Draw live trail for fuzzy and hard modes (skip in history mode)
+        if (!historyMode && (vizMode === 'fuzzy' || vizMode === 'hard') && drone.trail && drone.trail.length > 1) {
             ctx.beginPath();
             ctx.strokeStyle = color;
             ctx.globalAlpha = 0.4;
@@ -308,38 +537,92 @@ function updateDroneList(drones) {
         const isActive = diff <= 30;
         const lightness = isActive ? 60 : 35;
         item.style.color = `hsl(${hue}, 100%, ${lightness}%)`;
-        item.innerText = `> [${id}] RSSI:${drone.rssi}dB (${Math.round(diff)}s ago)`;
+
+        // Build hunger display with color coding
+        let hungerText = '';
+        const hunger = drone.hunger !== undefined ? drone.hunger : 100;
+        if (hunger <= 0) {
+            hungerText = ' <span style="color:#f00;font-weight:bold">☠STARVING</span>';
+        } else if (hunger <= 20) {
+            hungerText = ` <span style="color:#f00">H:${hunger}%</span>`;
+        } else if (hunger <= 50) {
+            hungerText = ` <span style="color:#ff0">H:${hunger}%</span>`;
+        } else {
+            hungerText = ` <span style="color:#0f0">H:${hunger}%</span>`;
+        }
+
+        // Show carrying status for FEED_QUEEN mode
+        let statusText = `> [${id}]${hungerText} RSSI:${drone.rssi}dB`;
+        if (drone.state === "carrying") {
+            statusText = `> [${id}]${hungerText} <span style="color:#00ff64">CARRYING</span>`;
+        }
+        item.innerHTML = statusText;
         list.appendChild(item);
     }
 }
 
 // --- RESIZER FUNCTIONALITY ---
 const resizer = document.getElementById('resizer');
+const resizerRight = document.getElementById('resizer-right');
 const panelLeft = document.getElementById('panel-left');
-let isResizing = false;
+const panelRight = document.getElementById('panel-right');
+let isResizingLeft = false;
+let isResizingRight = false;
 
+// Left resizer
 resizer.addEventListener('mousedown', (e) => {
-    isResizing = true;
+    isResizingLeft = true;
     resizer.classList.add('dragging');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 });
 
+// Right resizer
+if (resizerRight) {
+    resizerRight.addEventListener('mousedown', (e) => {
+        isResizingRight = true;
+        resizerRight.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    });
+}
+
 document.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
     const containerRect = document.querySelector('.container').getBoundingClientRect();
-    let newWidth = e.clientX - containerRect.left;
-    newWidth = Math.max(150, Math.min(newWidth, containerRect.width * 0.5));
-    panelLeft.style.width = newWidth + 'px';
+
+    if (isResizingLeft) {
+        let newWidth = e.clientX - containerRect.left;
+        newWidth = Math.max(150, Math.min(newWidth, 400));
+        panelLeft.style.flex = 'none';  // Override flex when manually resizing
+        panelLeft.style.width = newWidth + 'px';
+    }
+
+    if (isResizingRight && panelRight) {
+        let newWidth = containerRect.right - e.clientX;
+        newWidth = Math.max(150, Math.min(newWidth, 400));
+        panelRight.style.flex = 'none';  // Override flex when manually resizing
+        panelRight.style.width = newWidth + 'px';
+    }
 });
 
 document.addEventListener('mouseup', () => {
-    if (isResizing) {
-        isResizing = false;
+    if (isResizingLeft) {
+        isResizingLeft = false;
         resizer.classList.remove('dragging');
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
     }
+    if (isResizingRight && resizerRight) {
+        isResizingRight = false;
+        resizerRight.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    }
+});
+
+// Lock config on mousedown to prevent race condition (before input loses focus)
+document.getElementById('apply-config-btn')?.addEventListener('mousedown', () => {
+    configUpdateLock = true;
 });
 
 // Start polling

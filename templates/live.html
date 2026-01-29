@@ -51,18 +51,98 @@
     </h2>
     <div class="container">
         <div class="panel panel-left" id="panel-left">
-            <div class="panel-header">Optical Sensor (Live Analysis)</div>
+            <div class="panel-header">Parameters</div>
+            <div id="parameters-panel">
+                <!-- Visualization Mode -->
+                <div class="param-section">
+                    <div class="param-label">VISUALIZATION</div>
+                    <select id="viz-mode" class="viz-mode-select" onchange="setVizMode()">
+                        <option value="fuzzy" selected>FUZZY (Pheromone)</option>
+                        <option value="hard">HARD (Solid)</option>
+                        <option value="ghost">GHOST (Trail)</option>
+                        <option value="heat">HEAT (Glow)</option>
+                    </select>
+                </div>
+
+                <!-- Read-only stats -->
+                <div class="param-section">
+                    <div class="param-label">MODE</div>
+                    <div class="param-value" id="param-mode">--</div>
+                </div>
+                <div class="param-section">
+                    <div class="param-label">DRONES</div>
+                    <div class="param-value" id="param-drones">--</div>
+                </div>
+                <div class="param-section">
+                    <div class="param-label">QUEEN FOOD</div>
+                    <div class="param-value" id="param-queen-food">--</div>
+                </div>
+                <div class="param-section">
+                    <div class="param-label">TRIPS</div>
+                    <div class="param-value" id="param-trips">--</div>
+                </div>
+                <div class="param-section">
+                    <div class="param-label">FOOD SOURCES</div>
+                    <div class="param-value" id="param-food-sources">--</div>
+                </div>
+
+                <!-- Editable pheromone params -->
+                <div class="param-header">PHEROMONES</div>
+                <div class="param-section param-editable">
+                    <div class="param-label">DECAY RATE</div>
+                    <input type="number" id="cfg-decay-rate" step="0.01" min="0.1" max="1" value="0.95">
+                </div>
+                <div class="param-section param-editable">
+                    <div class="param-label">DEPOSIT AMT</div>
+                    <input type="number" id="cfg-deposit-amount" step="0.5" min="0" max="20" value="5.0">
+                </div>
+                <div class="param-section param-editable">
+                    <div class="param-label">GHOST DEPOSIT</div>
+                    <input type="number" id="cfg-ghost-deposit" step="0.1" min="0" max="5" value="0.5">
+                </div>
+
+                <!-- Editable food params -->
+                <div class="param-header">FOOD</div>
+                <div class="param-section param-editable">
+                    <div class="param-label">DETECTION RADIUS</div>
+                    <input type="number" id="cfg-detection-radius" step="1" min="5" max="50" value="20">
+                </div>
+                <div class="param-section param-editable">
+                    <div class="param-label">PHEROMONE BOOST</div>
+                    <input type="number" id="cfg-pheromone-boost" step="0.5" min="1" max="10" value="3.0">
+                </div>
+
+                <!-- Hunger params -->
+                <div class="param-header">HUNGER</div>
+                <div class="param-section param-editable">
+                    <div class="param-label">ANT DEATH</div>
+                    <select id="cfg-death-mode" class="config-select">
+                        <option value="no">NO (Freeze)</option>
+                        <option value="yes">YES (Die)</option>
+                        <option value="respawn">RESPAWN</option>
+                    </select>
+                </div>
+
+                <div class="config-buttons">
+                    <button id="apply-config-btn" onclick="applyConfig()">APPLY</button>
+                    <button id="reset-config-btn" onclick="resetConfig()">RST</button>
+                </div>
+            </div>
+            <div class="panel-header" style="border-top: 1px solid #111;">Optical Sensor</div>
             <img class="feed" src="/video_feed">
-            <div class="panel-header" style="border-top: 1px solid #111; margin-top: 0;">Drone Registry</div>
-            <div id="drone-registry"></div>
         </div>
         <div class="resizer" id="resizer"></div>
-        <div class="panel panel-right">
-            <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active Drones: <span id="drone-counter" style="color: #f00">0</span></span></div>
+        <div class="panel panel-center">
+            <div class="panel-header">Swarm Telemetry <span style="float:right; color: #fff;">Active: <span id="drone-counter" style="color: #f00">0</span></span></div>
             <div id="map-container">
                 <canvas id="hiveMap" width="800" height="800"></canvas>
                 <div id="overlays"></div>
             </div>
+        </div>
+        <div class="resizer" id="resizer-right"></div>
+        <div class="panel panel-right" id="panel-right">
+            <div class="panel-header">Drone Registry</div>
+            <div id="drone-registry"></div>
         </div>
     </div>
     <script src="/static/js/hive-core.js"></script>

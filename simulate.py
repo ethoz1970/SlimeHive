@@ -20,6 +20,7 @@ from datetime import datetime
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config", "simulation.json")
+LIVE_CONFIG_FILE = os.path.join(BASE_DIR, "hive_config_live.json")
 
 HISTORY_FILE = os.path.join(BASE_DIR, "hive_state.json")
 
@@ -56,6 +57,12 @@ DEFAULT_CONFIG = {
     "recording": {
         "enabled": False,
         "output_dir": "analysis/sessions"
+    },
+    "hunger": {
+        "enabled": True,
+        "decay_interval": 10,  # Hunger decreases every N ticks (~33 seconds at 30 Hz)
+        "desperate_threshold": 20,  # Below this, drone becomes desperate
+        "death_mode": "no"  # "yes" = die, "no" = freeze only, "respawn" = die and respawn at queen
     }
 }
 
@@ -95,9 +102,62 @@ class Simulation:
         # Drones
         self.drones = {}
 
+        # Food sources
+        self.food_sources = []
+
+        # Queen position and food storage (for FEED_QUEEN mode)
+        self.queen_pos = (10, 10)
+        self.queen_food = 0
+        self.trips_completed = 0
+
         # Metrics
         self.metrics_history = []
         self.start_time = None
+
+        # Tick counter for hunger decay
+        self.tick_counter = 0
+
+        # Live config tracking
+        self.last_config_check = 0
+        self.config_check_interval = 0.5  # Check every 0.5 seconds
+
+    def load_live_config(self):
+        """Load live config changes from dashboard"""
+        now = time.time()
+        if now - self.last_config_check < self.config_check_interval:
+            return  # Don't check too frequently
+
+        self.last_config_check = now
+
+        try:
+            if os.path.exists(LIVE_CONFIG_FILE):
+                with open(LIVE_CONFIG_FILE, 'r') as f:
+                    live_config = json.load(f)
+
+                # Apply pheromone config
+                if 'decay_rate' in live_config:
+                    self.config["pheromones"]["decay_rate"] = live_config['decay_rate']
+                if 'deposit_amount' in live_config:
+                    self.config["pheromones"]["deposit_amount"] = live_config['deposit_amount']
+                if 'ghost_deposit' in live_config:
+                    self.config["pheromones"]["ghost_deposit"] = live_config['ghost_deposit']
+
+                # Apply food config
+                if "food" not in self.config:
+                    self.config["food"] = {}
+                if 'detection_radius' in live_config:
+                    self.config["food"]["detection_radius"] = live_config['detection_radius']
+                if 'pheromone_boost' in live_config:
+                    self.config["food"]["pheromone_boost"] = live_config['pheromone_boost']
+
+                # Apply hunger config
+                if "hunger" not in self.config:
+                    self.config["hunger"] = {}
+                if 'death_mode' in live_config:
+                    self.config["hunger"]["death_mode"] = live_config['death_mode']
+
+        except Exception as e:
+            pass  # Don't crash simulation if config read fails
 
     def get_neighbors(self, drone_id, max_distance):
         """Find all drones within max_distance of the given drone"""
@@ -125,148 +185,254 @@ class Simulation:
 
         return neighbors
 
+    # --- BEHAVIOR COMPONENTS (return velocity vectors) ---
+
+    def _behavior_avoid(self, drone, neighbors, params):
+        """Avoid nearby drones - separation behavior"""
+        vx, vy = 0.0, 0.0
+        if neighbors:
+            for ndata in neighbors.values():
+                if ndata["distance"] < params["separation_distance"] + 2:
+                    weight = 1.0 / max(ndata["distance"], 0.5)
+                    vx -= ndata["dx"] * weight
+                    vy -= ndata["dy"] * weight
+        return vx, vy
+
+    def _behavior_flock(self, drone, neighbors, params):
+        """Move toward neighbors - cohesion behavior"""
+        vx, vy = 0.0, 0.0
+        if neighbors:
+            avg_dx = np.mean([n["dx"] for n in neighbors.values()])
+            avg_dy = np.mean([n["dy"] for n in neighbors.values()])
+            vx, vy = avg_dx * 0.5, avg_dy * 0.5
+        else:
+            # Move toward swarm center if no neighbors
+            all_x = [d["x"] for d in self.drones.values()]
+            all_y = [d["y"] for d in self.drones.values()]
+            if all_x and all_y:
+                cx, cy = np.mean(all_x), np.mean(all_y)
+                vx = (cx - drone["x"]) * 0.3
+                vy = (cy - drone["y"]) * 0.3
+        return vx, vy
+
+    def _behavior_align(self, drone, neighbors, params):
+        """Align velocity with neighbors"""
+        vx, vy = 0.0, 0.0
+        if neighbors:
+            vx_sum = sum(self.drones[nid].get("vx", 0) for nid in neighbors)
+            vy_sum = sum(self.drones[nid].get("vy", 0) for nid in neighbors)
+            vx = vx_sum / len(neighbors)
+            vy = vy_sum / len(neighbors)
+        return vx, vy
+
+    def _behavior_forage(self, drone, neighbors, params):
+        """Move toward food sources - behavior scales with hunger/desperation"""
+        vx, vy = 0.0, 0.0
+
+        # Calculate desperation (0.0 = full, 1.0 = starving)
+        desperation = self.get_desperation(drone)
+
+        # Increase detection radius based on desperation (up to 1.5x)
+        food_config = self.config.get("food", {})
+        base_radius = food_config.get("detection_radius", 20)
+        detection_radius = base_radius * (1 + desperation * 0.5)
+
+        nearby_food = self.detect_food(drone, detection_radius)
+
+        if nearby_food:
+            closest = nearby_food[0]
+            vx = closest["direction_x"]
+            vy = closest["direction_y"]
+            # Normalize and scale speed by desperation (speed 2 to 3)
+            mag = max((vx**2 + vy**2) ** 0.5, 1)
+            speed = 2 + desperation  # Faster when hungry
+            vx, vy = vx / mag * speed, vy / mag * speed
+        else:
+            # Erratic movement scales with desperation (more frantic searching)
+            if np.random.random() < desperation * 0.5:
+                vx = np.random.choice([-1, 0, 1]) * (1 + desperation)
+                vy = np.random.choice([-1, 0, 1]) * (1 + desperation)
+            else:
+                # Follow pheromone trails
+                best_pheromone = 0
+                for check_dx in [-1, 0, 1]:
+                    for check_dy in [-1, 0, 1]:
+                        if check_dx == 0 and check_dy == 0:
+                            continue
+                        nx = drone["x"] + check_dx
+                        ny = drone["y"] + check_dy
+                        if self.margin <= nx < self.grid_size - self.margin and \
+                           self.margin <= ny < self.grid_size - self.margin:
+                            p = self.ghost_grid[nx][ny]
+                            if p > best_pheromone:
+                                best_pheromone = p
+                                vx, vy = check_dx * 0.5, check_dy * 0.5
+        return vx, vy
+
+    def _behavior_scatter(self, drone, neighbors, params):
+        """Move away from grid center"""
+        center_x = self.grid_size // 2
+        center_y = self.grid_size // 2
+        vx = drone["x"] - center_x
+        vy = drone["y"] - center_y
+        mag = max((vx**2 + vy**2) ** 0.5, 1)
+        return vx / mag, vy / mag
+
+    def _behavior_swarm(self, drone, neighbors, params):
+        """Move toward swarm center of mass"""
+        vx, vy = 0.0, 0.0
+        all_drones = list(self.drones.values())
+        if len(all_drones) > 1:
+            cx = sum(d["x"] for d in all_drones) / len(all_drones)
+            cy = sum(d["y"] for d in all_drones) / len(all_drones)
+            vx = cx - drone["x"]
+            vy = cy - drone["y"]
+            mag = max((vx**2 + vy**2) ** 0.5, 1)
+            vx, vy = vx / mag, vy / mag
+        return vx, vy
+
+    def _behavior_random(self, drone, neighbors, params):
+        """Random movement"""
+        return np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
+
+    def _behavior_feed_queen(self, drone, neighbors, params):
+        """FEED_QUEEN specific: return to queen when carrying"""
+        vx, vy = 0.0, 0.0
+        state = drone.get("state", "searching")
+
+        if state == "carrying":
+            # Head back to Queen
+            qx, qy = self.queen_pos
+            vx = qx - drone["x"]
+            vy = qy - drone["y"]
+            mag = max((vx**2 + vy**2) ** 0.5, 1)
+            vx, vy = vx / mag * 3, vy / mag * 3  # Strong pull to queen
+        else:
+            # Use forage behavior when searching
+            vx, vy = self._behavior_forage(drone, neighbors, params)
+
+        return vx, vy
+
+    # --- MAIN MOVEMENT CALCULATOR ---
+
     def calculate_movement(self, drone_id):
-        """Calculate movement based on behavior mode"""
+        """Calculate movement based on behavior mode(s) - supports combining modes"""
         drone = self.drones[drone_id]
         params = self.config["behavior_params"]
-        mode = self.config["drones"]["behavior_mode"]
+        mode_str = self.config["drones"]["behavior_mode"]
         neighbors = self.get_neighbors(drone_id, params["neighbor_radius"])
 
-        dx, dy = 0, 0
+        # Parse modes (comma-separated)
+        modes = [m.strip().upper() for m in mode_str.split(",")]
 
-        if mode == "RANDOM":
-            dx = np.random.choice([-1, 0, 1])
-            dy = np.random.choice([-1, 0, 1])
-
-        elif mode == "AVOID":
-            if neighbors:
-                closest_id = min(neighbors, key=lambda k: neighbors[k]["distance"])
-                closest = neighbors[closest_id]
-
-                if closest["distance"] < params["separation_distance"]:
-                    dx = -int(np.sign(closest["dx"])) if closest["dx"] != 0 else np.random.choice([-1, 1])
-                    dy = -int(np.sign(closest["dy"])) if closest["dy"] != 0 else np.random.choice([-1, 1])
-                else:
-                    dx, dy = np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
-            else:
-                dx, dy = np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
-
-        elif mode == "FLOCK":
-            if not neighbors:
-                # Move toward swarm center
-                all_x = [d["x"] for d in self.drones.values()]
-                all_y = [d["y"] for d in self.drones.values()]
-                if all_x and all_y:
-                    cx, cy = np.mean(all_x), np.mean(all_y)
-                    dx = int(np.sign(cx - drone["x"]))
-                    dy = int(np.sign(cy - drone["y"]))
-            else:
-                close = {k: v for k, v in neighbors.items()
-                        if v["distance"] < params["separation_distance"]}
-                if close:
-                    # Separation
-                    for ndata in close.values():
-                        dx -= int(np.sign(ndata["dx"])) if ndata["dx"] != 0 else 0
-                        dy -= int(np.sign(ndata["dy"])) if ndata["dy"] != 0 else 0
-                    dx, dy = int(np.sign(dx)) if dx != 0 else 0, int(np.sign(dy)) if dy != 0 else 0
-                else:
-                    # Cohesion
-                    avg_dx = np.mean([n["dx"] for n in neighbors.values()])
-                    avg_dy = np.mean([n["dy"] for n in neighbors.values()])
-                    dx, dy = int(np.sign(avg_dx)), int(np.sign(avg_dy))
-
-            # Add randomness
-            if np.random.random() < 0.25:
-                dx, dy = np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
-
-        elif mode == "BOIDS":
-            sep_x, sep_y = 0, 0
-            coh_x, coh_y = 0, 0
-            ali_x, ali_y = 0, 0
-
-            if neighbors:
-                # Separation
-                sep_dist = params["separation_distance"] + 1
-                close = {k: v for k, v in neighbors.items() if v["distance"] < sep_dist}
-                for ndata in close.values():
-                    weight = 1.0 / max(ndata["distance"], 0.5)
-                    sep_x -= ndata["dx"] * weight
-                    sep_y -= ndata["dy"] * weight
-
-                # Cohesion
-                coh_x = np.mean([n["dx"] for n in neighbors.values()])
-                coh_y = np.mean([n["dy"] for n in neighbors.values()])
-
-                # Alignment
-                vx_sum = sum(self.drones[nid].get("vx", 0) for nid in neighbors)
-                vy_sum = sum(self.drones[nid].get("vy", 0) for nid in neighbors)
-                ali_x = vx_sum / len(neighbors)
-                ali_y = vy_sum / len(neighbors)
-
-                # Combine with weights
-                total_x = (sep_x * params["separation_weight"] +
-                          coh_x * params["cohesion_weight"] +
-                          ali_x * params["alignment_weight"])
-                total_y = (sep_y * params["separation_weight"] +
-                          coh_y * params["cohesion_weight"] +
-                          ali_y * params["alignment_weight"])
-
-                dx = int(np.sign(total_x)) if abs(total_x) > 0.1 else 0
-                dy = int(np.sign(total_y)) if abs(total_y) > 0.1 else 0
-            else:
-                dx, dy = np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
-
-            # Slight randomness
-            if np.random.random() < 0.15:
+        # PRIORITY: If drone is carrying food in FEED_QUEEN mode, ONLY go to queen
+        # Other behaviors are ignored when carrying - delivery is the priority
+        if "FEED_QUEEN" in modes and drone.get("state") == "carrying":
+            qx, qy = self.queen_pos
+            dir_x = qx - drone["x"]
+            dir_y = qy - drone["y"]
+            dx = int(np.sign(dir_x)) if dir_x != 0 else 0
+            dy = int(np.sign(dir_y)) if dir_y != 0 else 0
+            # Slight randomness for natural movement
+            if np.random.random() < 0.1:
                 dx += np.random.choice([-1, 0, 1])
                 dy += np.random.choice([-1, 0, 1])
                 dx = int(np.sign(dx)) if dx != 0 else 0
                 dy = int(np.sign(dy)) if dy != 0 else 0
+            return dx, dy
 
-        elif mode == "SWARM":
-            # Move toward center of mass
-            all_drones = list(self.drones.values())
-            if len(all_drones) > 1:
-                cx = sum(d["x"] for d in all_drones) / len(all_drones)
-                cy = sum(d["y"] for d in all_drones) / len(all_drones)
+        # Behavior weights (can be customized in config later)
+        weights = {
+            "AVOID": params.get("avoid_weight", 2.0),
+            "FLOCK": params.get("flock_weight", 1.0),
+            "ALIGN": params.get("align_weight", 0.5),
+            "FORAGE": params.get("forage_weight", 2.0),
+            "SCATTER": params.get("scatter_weight", 1.0),
+            "SWARM": params.get("swarm_weight", 1.0),
+            "RANDOM": params.get("random_weight", 0.3),
+            "FEED_QUEEN": params.get("feed_queen_weight", 3.0),
+            "BOIDS": 1.0,  # BOIDS combines avoid+flock+align internally
+        }
 
-                vx = cx - drone["x"]
-                vy = cy - drone["y"]
-                dist = (vx**2 + vy**2) ** 0.5
+        total_vx, total_vy = 0.0, 0.0
 
-                if dist > 5:
-                    dx = int(np.sign(vx))
-                    dy = int(np.sign(vy))
-                else:
-                    dx = np.random.choice([-1, 0, 1])
-                    dy = np.random.choice([-1, 0, 1])
+        # Calculate desperation for hunger-based weight modification
+        desperation = self.get_desperation(drone)
 
-                if np.random.random() < 0.4:
-                    dx = np.random.choice([-1, 0, 1])
-                    dy = np.random.choice([-1, 0, 1])
-            else:
-                dx, dy = np.random.choice([-1, 0, 1]), np.random.choice([-1, 0, 1])
+        for mode in modes:
+            vx, vy = 0.0, 0.0
+            w = weights.get(mode, 1.0)
 
-        elif mode == "SCATTER":
-            # Move away from center
-            center_x = self.grid_size // 2
-            center_y = self.grid_size // 2
-            vx = drone["x"] - center_x
-            vy = drone["y"] - center_y
+            if mode == "AVOID":
+                # Reduce avoidance as hunger drops (desperate drones ignore personal space)
+                w = w * (1 - desperation)
+                vx, vy = self._behavior_avoid(drone, neighbors, params)
+            elif mode == "FLOCK":
+                vx, vy = self._behavior_flock(drone, neighbors, params)
+            elif mode == "ALIGN":
+                vx, vy = self._behavior_align(drone, neighbors, params)
+            elif mode == "FORAGE":
+                vx, vy = self._behavior_forage(drone, neighbors, params)
+            elif mode == "SCATTER":
+                vx, vy = self._behavior_scatter(drone, neighbors, params)
+            elif mode == "SWARM":
+                vx, vy = self._behavior_swarm(drone, neighbors, params)
+            elif mode == "RANDOM":
+                vx, vy = self._behavior_random(drone, neighbors, params)
+            elif mode == "FEED_QUEEN":
+                vx, vy = self._behavior_feed_queen(drone, neighbors, params)
+            elif mode == "BOIDS":
+                # BOIDS is a preset combination
+                av_x, av_y = self._behavior_avoid(drone, neighbors, params)
+                fl_x, fl_y = self._behavior_flock(drone, neighbors, params)
+                al_x, al_y = self._behavior_align(drone, neighbors, params)
+                vx = av_x * params["separation_weight"] + fl_x * params["cohesion_weight"] + al_x * params["alignment_weight"]
+                vy = av_y * params["separation_weight"] + fl_y * params["cohesion_weight"] + al_y * params["alignment_weight"]
 
-            dx = int(np.sign(vx)) if vx != 0 else np.random.choice([-1, 1])
-            dy = int(np.sign(vy)) if vy != 0 else np.random.choice([-1, 1])
+            total_vx += vx * w
+            total_vy += vy * w
 
-            if np.random.random() < 0.3:
-                dx = np.random.choice([-1, 0, 1])
-                dy = np.random.choice([-1, 0, 1])
+        # Add slight randomness for natural movement
+        if np.random.random() < 0.15:
+            total_vx += np.random.choice([-0.5, 0, 0.5])
+            total_vy += np.random.choice([-0.5, 0, 0.5])
+
+        # Convert to discrete movement
+        dx = int(np.sign(total_vx)) if abs(total_vx) > 0.1 else 0
+        dy = int(np.sign(total_vy)) if abs(total_vy) > 0.1 else 0
+
+        # If no movement, add random step to prevent stalling
+        if dx == 0 and dy == 0 and np.random.random() < 0.5:
+            dx = np.random.choice([-1, 0, 1])
+            dy = np.random.choice([-1, 0, 1])
 
         return dx, dy
 
     def calculate_metrics(self):
         """Calculate swarm metrics"""
-        if len(self.drones) < 2:
-            return {}
+        if len(self.drones) == 0:
+            # All drones dead - return zeroed metrics
+            return {
+                "avg_neighbor_distance": 0,
+                "avg_nearest_neighbor": 0,
+                "swarm_spread": 0,
+                "center_x": 0,
+                "center_y": 0,
+                "velocity_alignment": 0,
+                "collisions": 0,
+                "coverage_percent": 0,
+                "drone_count": 0,
+                "food_remaining": 0,
+                "food_depleted": 0,
+                "food_consumed_pct": 0,
+                "queen_food": round(self.queen_food, 1),
+                "carriers": 0,
+                "trips_completed": self.trips_completed,
+                "avg_hunger": 0,
+                "min_hunger": 0,
+                "starving": 0,
+                "desperate": 0
+            }
 
         # Collect all neighbor distances
         all_distances = []
@@ -303,6 +469,29 @@ class Simulation:
         covered_cells = np.sum(self.ghost_grid > 0)
         coverage_pct = (covered_cells / (self.grid_size * self.grid_size)) * 100
 
+        # Food metrics
+        food_remaining = 0
+        food_depleted = 0
+        total_food_capacity = 0
+
+        if self.food_sources:
+            for food in self.food_sources:
+                total_food_capacity += food["max_amount"]
+                if food["consumed"]:
+                    food_depleted += 1
+                else:
+                    food_remaining += food["amount"]
+
+        # FEED_QUEEN metrics
+        carriers = sum(1 for d in self.drones.values() if d.get("state") == "carrying")
+
+        # Hunger metrics
+        hunger_values = [d.get("hunger", 100) for d in self.drones.values()]
+        avg_hunger = np.mean(hunger_values) if hunger_values else 100
+        min_hunger = min(hunger_values) if hunger_values else 100
+        starving_count = sum(1 for h in hunger_values if h <= 0)
+        desperate_count = sum(1 for h in hunger_values if 0 < h <= 20)
+
         return {
             "avg_neighbor_distance": round(avg_neighbor_dist, 2),
             "avg_nearest_neighbor": round(avg_nearest, 2),
@@ -312,55 +501,228 @@ class Simulation:
             "velocity_alignment": round(alignment, 3),
             "collisions": collisions,
             "coverage_percent": round(coverage_pct, 2),
-            "drone_count": len(self.drones)
+            "drone_count": len(self.drones),
+            "food_remaining": round(food_remaining, 1),
+            "food_depleted": food_depleted,
+            "food_consumed_pct": round((1 - food_remaining / total_food_capacity) * 100, 1) if total_food_capacity > 0 else 0,
+            "queen_food": round(self.queen_food, 1),
+            "carriers": carriers,
+            "trips_completed": self.trips_completed,
+            "avg_hunger": round(avg_hunger, 1),
+            "min_hunger": min_hunger,
+            "starving": starving_count,
+            "desperate": desperate_count
         }
 
+    def is_too_close_to_food(self, x, y, min_distance=10):
+        """Check if position is within min_distance of any food source"""
+        for food in self.food_sources:
+            dist = ((food["x"] - x)**2 + (food["y"] - y)**2) ** 0.5
+            if dist < min_distance:
+                return True
+        return False
+
     def spawn_drones(self):
-        """Spawn drones based on configuration"""
+        """Spawn drones based on configuration (at least 10 cells from food)"""
         count = self.config["drones"]["count"]
         pattern = self.config["drones"]["spawn_pattern"]
+        max_attempts = 50  # Prevent infinite loop if grid is too crowded
 
         for i in range(count):
             did = f"S-{i:03d}"
 
-            if pattern == "random":
-                x = np.random.randint(self.margin, self.grid_size - self.margin)
-                y = np.random.randint(self.margin, self.grid_size - self.margin)
-            elif pattern == "center":
-                x = self.grid_size // 2 + np.random.randint(-5, 6)
-                y = self.grid_size // 2 + np.random.randint(-5, 6)
-            elif pattern == "corners":
-                corner = i % 4
-                if corner == 0:
-                    x, y = self.margin + 5, self.margin + 5
-                elif corner == 1:
-                    x, y = self.grid_size - self.margin - 5, self.margin + 5
-                elif corner == 2:
-                    x, y = self.margin + 5, self.grid_size - self.margin - 5
+            for attempt in range(max_attempts):
+                if pattern == "random":
+                    x = np.random.randint(self.margin, self.grid_size - self.margin)
+                    y = np.random.randint(self.margin, self.grid_size - self.margin)
+                elif pattern == "center":
+                    x = self.grid_size // 2 + np.random.randint(-5, 6)
+                    y = self.grid_size // 2 + np.random.randint(-5, 6)
+                elif pattern == "corners":
+                    corner = i % 4
+                    if corner == 0:
+                        x, y = self.margin + 5, self.margin + 5
+                    elif corner == 1:
+                        x, y = self.grid_size - self.margin - 5, self.margin + 5
+                    elif corner == 2:
+                        x, y = self.margin + 5, self.grid_size - self.margin - 5
+                    else:
+                        x, y = self.grid_size - self.margin - 5, self.grid_size - self.margin - 5
+                    x += np.random.randint(-3, 4)
+                    y += np.random.randint(-3, 4)
+                elif pattern == "line":
+                    x = self.margin + (i * (self.grid_size - 2 * self.margin) // max(count - 1, 1))
+                    y = self.grid_size // 2
+                elif pattern == "queen":
+                    # Spawn at queen's location with slight spread
+                    qx, qy = self.queen_pos
+                    x = qx + np.random.randint(-3, 4)
+                    y = qy + np.random.randint(-3, 4)
                 else:
-                    x, y = self.grid_size - self.margin - 5, self.grid_size - self.margin - 5
-                x += np.random.randint(-3, 4)
-                y += np.random.randint(-3, 4)
-            elif pattern == "line":
-                x = self.margin + (i * (self.grid_size - 2 * self.margin) // max(count - 1, 1))
-                y = self.grid_size // 2
-            else:
-                x = np.random.randint(self.margin, self.grid_size - self.margin)
-                y = np.random.randint(self.margin, self.grid_size - self.margin)
+                    x = np.random.randint(self.margin, self.grid_size - self.margin)
+                    y = np.random.randint(self.margin, self.grid_size - self.margin)
+
+                # Check if too close to food (only if food exists)
+                if not self.food_sources or not self.is_too_close_to_food(x, y, min_distance=10):
+                    break  # Good position found
 
             self.drones[did] = {
                 "x": int(x),
                 "y": int(y),
                 "vx": 0,
                 "vy": 0,
-                "trail": []
+                "trail": [],
+                "rssi": -50,  # Simulated signal strength
+                "last_seen": time.time(),
+                "state": "searching",  # For FEED_QUEEN: searching, carrying
+                "carrying": 0,  # Amount of food being carried
+                "hunger": 100,  # Current hunger level (0-100)
+                "max_hunger": 100  # Maximum hunger
             }
+
+    def spawn_food(self):
+        """Spawn food sources based on configuration"""
+        food_config = self.config.get("food", {})
+        if not food_config.get("enabled", False):
+            return
+
+        count = food_config.get("sources", 5)
+        spread = food_config.get("spread", "scattered")
+        amount = food_config.get("amount", 100)
+        radius = food_config.get("radius", 3)
+
+        for i in range(count):
+            if spread == "scattered":
+                x = np.random.randint(self.margin + 5, self.grid_size - self.margin - 5)
+                y = np.random.randint(self.margin + 5, self.grid_size - self.margin - 5)
+
+            elif spread == "clustered":
+                cx, cy = self.grid_size // 2, self.grid_size // 2
+                x = cx + np.random.randint(-20, 21)
+                y = cy + np.random.randint(-20, 21)
+
+            elif spread == "corners":
+                corner = i % 4
+                if corner == 0:
+                    x, y = self.margin + 10, self.margin + 10
+                elif corner == 1:
+                    x, y = self.grid_size - self.margin - 10, self.margin + 10
+                elif corner == 2:
+                    x, y = self.margin + 10, self.grid_size - self.margin - 10
+                else:
+                    x, y = self.grid_size - self.margin - 10, self.grid_size - self.margin - 10
+                x += np.random.randint(-5, 6)
+                y += np.random.randint(-5, 6)
+
+            elif spread == "center":
+                x = self.grid_size // 2 + np.random.randint(-10, 11)
+                y = self.grid_size // 2 + np.random.randint(-10, 11)
+
+            elif spread == "perimeter":
+                edge = i % 4
+                if edge == 0:
+                    x = np.random.randint(self.margin, self.grid_size - self.margin)
+                    y = self.margin + 5
+                elif edge == 1:
+                    x = self.grid_size - self.margin - 5
+                    y = np.random.randint(self.margin, self.grid_size - self.margin)
+                elif edge == 2:
+                    x = np.random.randint(self.margin, self.grid_size - self.margin)
+                    y = self.grid_size - self.margin - 5
+                else:
+                    x = self.margin + 5
+                    y = np.random.randint(self.margin, self.grid_size - self.margin)
+
+            else:  # Default to scattered
+                x = np.random.randint(self.margin + 5, self.grid_size - self.margin - 5)
+                y = np.random.randint(self.margin + 5, self.grid_size - self.margin - 5)
+
+            self.food_sources.append({
+                "id": f"F-{i:03d}",
+                "x": int(x),
+                "y": int(y),
+                "amount": float(amount),
+                "max_amount": float(amount),
+                "radius": radius,
+                "consumed": False
+            })
+
+    def detect_food(self, drone, detection_radius=None):
+        """Find food sources within detection radius of drone"""
+        food_config = self.config.get("food", {})
+        if detection_radius is None:
+            detection_radius = food_config.get("detection_radius", 20)
+
+        detected = []
+        dx, dy = drone["x"], drone["y"]
+
+        for food in self.food_sources:
+            if food["consumed"]:
+                continue
+
+            dist = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
+            if dist <= detection_radius:
+                detected.append({
+                    "food": food,
+                    "distance": dist,
+                    "direction_x": food["x"] - dx,
+                    "direction_y": food["y"] - dy
+                })
+
+        return sorted(detected, key=lambda f: f["distance"])
+
+    def consume_food(self, drone):
+        """Drone consumes nearby food"""
+        food_config = self.config.get("food", {})
+        consumption_rate = food_config.get("consumption_rate", 0.5)
+
+        dx, dy = drone["x"], drone["y"]
+
+        for food in self.food_sources:
+            if food["consumed"]:
+                continue
+
+            dist = ((food["x"] - dx)**2 + (food["y"] - dy)**2) ** 0.5
+
+            # Within consumption radius
+            if dist <= food["radius"] + 1:
+                consume_amount = consumption_rate * (1 - dist / (food["radius"] + 2))
+                food["amount"] -= consume_amount
+
+                if food["amount"] <= 0:
+                    food["amount"] = 0
+                    food["consumed"] = True
+
+                return True  # Drone found food
+
+        return False
+
+    def is_inside_food(self, x, y):
+        """Check if position is inside any food source"""
+        for food in self.food_sources:
+            if food["consumed"]:
+                continue
+            dist = ((food["x"] - x)**2 + (food["y"] - y)**2) ** 0.5
+            if dist < food["radius"]:
+                return True
+        return False
+
+    def get_desperation(self, drone):
+        """Calculate desperation factor (0.0 = full, 1.0 = starving)"""
+        hunger = drone.get("hunger", 100)
+        return 1.0 - (hunger / 100.0)
 
     def update_drone(self, drone_id):
         """Update a single drone's position"""
         drone = self.drones[drone_id]
         params = self.config["behavior_params"]
         pheromone_config = self.config["pheromones"]
+
+        # Starving drones freeze/slow down (90% chance to skip movement)
+        hunger_config = self.config.get("hunger", {})
+        if hunger_config.get("enabled", True) and drone.get("hunger", 100) <= 0:
+            if np.random.random() > 0.1:
+                return
 
         # Check move probability
         if np.random.random() > params["move_probability"]:
@@ -373,6 +735,21 @@ class Simulation:
         new_x = int(max(self.margin, min(self.grid_size - self.margin, drone["x"] + dx)))
         new_y = int(max(self.margin, min(self.grid_size - self.margin, drone["y"] + dy)))
 
+        # Block movement into food squares - drones stay at edge
+        if self.is_inside_food(new_x, new_y):
+            # Try moving only in x direction
+            if not self.is_inside_food(drone["x"] + dx, drone["y"]):
+                new_x = int(max(self.margin, min(self.grid_size - self.margin, drone["x"] + dx)))
+                new_y = drone["y"]
+            # Try moving only in y direction
+            elif not self.is_inside_food(drone["x"], drone["y"] + dy):
+                new_x = drone["x"]
+                new_y = int(max(self.margin, min(self.grid_size - self.margin, drone["y"] + dy)))
+            else:
+                # Can't move - stay in place
+                new_x = drone["x"]
+                new_y = drone["y"]
+
         # Update velocity
         drone["vx"] = new_x - drone["x"]
         drone["vy"] = new_y - drone["y"]
@@ -381,22 +758,121 @@ class Simulation:
         drone["x"] = new_x
         drone["y"] = new_y
 
+        # Update last_seen for dashboard compatibility
+        drone["last_seen"] = time.time()
+
         # Update trail
         drone["trail"].append([new_x, new_y])
         if len(drone["trail"]) > 10:
             drone["trail"].pop(0)
 
-        # Deposit pheromones
-        self.hive_grid[new_x][new_y] = min(255,
-            self.hive_grid[new_x][new_y] + pheromone_config["deposit_amount"])
-        self.ghost_grid[new_x][new_y] = min(255,
-            self.ghost_grid[new_x][new_y] + pheromone_config["ghost_deposit"])
+        # Deposit pheromones (stronger when carrying food - creates trail back to food)
+        deposit = pheromone_config["deposit_amount"]
+        ghost_deposit = pheromone_config["ghost_deposit"]
+
+        if drone.get("carrying", 0) > 0:
+            # Carrying food - leave strong trail for others to follow
+            deposit *= 4.0
+            ghost_deposit *= 4.0
+
+        self.hive_grid[new_x][new_y] = min(255, self.hive_grid[new_x][new_y] + deposit)
+        self.ghost_grid[new_x][new_y] = min(255, self.ghost_grid[new_x][new_y] + ghost_deposit)
 
     def tick(self):
         """Run one simulation tick"""
+        # Check for live config updates from dashboard
+        self.load_live_config()
+
+        # Increment tick counter
+        self.tick_counter += 1
+
+        food_config = self.config.get("food", {})
+        food_enabled = food_config.get("enabled", False)
+        pheromone_boost = food_config.get("pheromone_boost", 3.0)
+        mode = self.config["drones"]["behavior_mode"]
+        modes = [m.strip().upper() for m in mode.split(",")]
+
+        # Hunger decay configuration
+        hunger_config = self.config.get("hunger", {})
+        hunger_enabled = hunger_config.get("enabled", True)
+        hunger_decay_interval = hunger_config.get("decay_interval", 10)
+
+        # Apply hunger decay to all drones
+        if hunger_enabled and self.tick_counter % hunger_decay_interval == 0:
+            for drone in self.drones.values():
+                drone["hunger"] = max(0, drone.get("hunger", 100) - 1)
+
+        # Handle drone death/respawn based on death_mode
+        death_mode = hunger_config.get("death_mode", "no")
+        if hunger_enabled and death_mode != "no":
+            dead_drones = [did for did, d in self.drones.items() if d.get("hunger", 100) <= 0]
+            for drone_id in dead_drones:
+                if death_mode == "yes":
+                    # Permanent death - remove drone
+                    del self.drones[drone_id]
+                elif death_mode == "respawn":
+                    # Respawn at queen with full hunger
+                    qx, qy = self.queen_pos
+                    self.drones[drone_id] = {
+                        "x": qx + np.random.randint(-2, 3),
+                        "y": qy + np.random.randint(-2, 3),
+                        "vx": 0,
+                        "vy": 0,
+                        "trail": [],
+                        "rssi": -50,
+                        "last_seen": time.time(),
+                        "state": "searching",
+                        "carrying": 0,
+                        "hunger": 100,
+                        "max_hunger": 100
+                    }
+
         # Update all drones
         for drone_id in list(self.drones.keys()):
             self.update_drone(drone_id)
+            drone = self.drones[drone_id]
+
+            if "FEED_QUEEN" in modes and food_enabled:
+                # FEED_QUEEN mode: pickup and dropoff logic
+                if drone.get("state") == "searching":
+                    # Check if at food edge - pickup food
+                    for food in self.food_sources:
+                        if food["consumed"]:
+                            continue
+                        dist = ((food["x"] - drone["x"])**2 + (food["y"] - drone["y"])**2) ** 0.5
+                        if dist <= food["radius"] + 2:  # At edge of food
+                            # Pickup food
+                            pickup_amount = min(2.0, food["amount"])
+                            if pickup_amount > 0:
+                                food["amount"] -= pickup_amount
+                                drone["carrying"] = pickup_amount
+                                drone["state"] = "carrying"
+                                drone["hunger"] = 100  # Reset hunger on food pickup
+                                if food["amount"] <= 0:
+                                    food["amount"] = 0
+                                    food["consumed"] = True
+                            break
+
+                elif drone.get("state") == "carrying":
+                    # Check if at Queen - dropoff food
+                    qx, qy = self.queen_pos
+                    dist_to_queen = ((qx - drone["x"])**2 + (qy - drone["y"])**2) ** 0.5
+                    if dist_to_queen <= 3:  # Close enough to Queen
+                        # Dropoff food
+                        self.queen_food += drone["carrying"]
+                        drone["carrying"] = 0
+                        drone["state"] = "searching"
+                        self.trips_completed += 1
+
+            elif food_enabled and "FEED_QUEEN" not in modes:
+                # FORAGE mode - consume food in place (only if NOT in FEED_QUEEN mode)
+                if self.consume_food(drone):
+                    drone["hunger"] = 100  # Reset hunger on food consumption
+                    # Deposit extra pheromones near food (recruitment)
+                    x, y = drone["x"], drone["y"]
+                    boost = self.config["pheromones"]["deposit_amount"] * pheromone_boost
+                    self.hive_grid[x][y] = min(255, self.hive_grid[x][y] + boost)
+                    self.ghost_grid[x][y] = min(255, self.ghost_grid[x][y] + boost * 0.5)
 
         # Apply decay
         decay_rate = self.config["pheromones"]["decay_rate"]
@@ -429,10 +905,19 @@ class Simulation:
 
     def write_live_state(self):
         """Write current state to hive_state.json for dashboard viewing"""
+        food_config = self.config.get("food", {})
+
         state = {
             "grid": self.hive_grid.tolist(),
             "ghost_grid": self.ghost_grid.tolist(),
             "drones": {k: {**v, "trail": v.get("trail", [])} for k, v in self.drones.items()},
+            "food_sources": self.food_sources,
+            "queen": {
+                "x": self.queen_pos[0],
+                "y": self.queen_pos[1],
+                "food": round(self.queen_food, 1),
+                "trips": self.trips_completed
+            },
             "mood": "SIMULATION",
             "decay_rate": self.config["pheromones"]["decay_rate"],
             "sim_mode": self.config["drones"]["behavior_mode"],
@@ -441,6 +926,14 @@ class Simulation:
                 "min_y": self.margin,
                 "max_x": self.grid_size - self.margin,
                 "max_y": self.grid_size - self.margin
+            },
+            "live_config": {
+                "decay_rate": self.config["pheromones"]["decay_rate"],
+                "deposit_amount": self.config["pheromones"]["deposit_amount"],
+                "ghost_deposit": self.config["pheromones"]["ghost_deposit"],
+                "detection_radius": food_config.get("detection_radius", 20),
+                "pheromone_boost": food_config.get("pheromone_boost", 3.0),
+                "death_mode": self.config.get("hunger", {}).get("death_mode", "no")
             }
         }
 
@@ -467,6 +960,7 @@ class Simulation:
             "grid": self.hive_grid.tolist(),
             "ghost_grid": self.ghost_grid.tolist(),
             "drones": self.drones,
+            "food_sources": self.food_sources,
             "config": self.config,
             "metrics_summary": self.metrics_history[-1] if self.metrics_history else {}
         }
@@ -487,7 +981,12 @@ class Simulation:
         tick_interval = 1.0 / tick_rate
 
         mode = self.config["drones"]["behavior_mode"]
+        modes = [m.strip().upper() for m in mode.split(",")]
         drone_count = self.config["drones"]["count"]
+
+        # Default to queen spawn for FEED_QUEEN mode (unless explicitly set)
+        if "FEED_QUEEN" in modes and self.config["drones"].get("spawn_pattern") == "random":
+            self.config["drones"]["spawn_pattern"] = "queen"
 
         print()
         print("=" * 60)
@@ -500,22 +999,50 @@ class Simulation:
         print(f"    Duration:   {duration}s ({total_ticks} ticks)")
         print(f"    Spawn:      {self.config['drones']['spawn_pattern']}")
         print(f"    Live View:  {self.config['simulation'].get('live_view', True)}")
+
+        # Food info
+        food_config = self.config.get("food", {})
+        if food_config.get("enabled", False):
+            print(f"    Food:       {food_config.get('sources', 5)} sources ({food_config.get('spread', 'scattered')})")
+        else:
+            print(f"    Food:       Disabled")
+
+        # Hunger info
+        hunger_config = self.config.get("hunger", {})
+        if hunger_config.get("enabled", True):
+            decay_interval = hunger_config.get("decay_interval", 10)
+            starvation_time = (100 * decay_interval) / tick_rate
+            print(f"    Hunger:     Decay every {decay_interval} ticks (~{starvation_time:.0f}s to starve)")
+        else:
+            print(f"    Hunger:     Disabled")
+
         print("=" * 60)
         if self.config["simulation"].get("live_view", True):
             print("    Dashboard: http://localhost:5050")
             print("    Run in another terminal: python dashboard_hud.py")
         print()
 
-        # Spawn drones
+        # Spawn food first (so drones can avoid spawning near it)
+        self.spawn_food()
+
+        # Spawn drones (at least 10 cells from food)
         self.spawn_drones()
         self.start_time = time.time()
 
         # Simulation loop
+        extinction = False
         for tick in range(total_ticks):
             tick_start = time.time()
 
             # Run simulation tick
             self.tick()
+
+            # Check for extinction (all drones dead)
+            if len(self.drones) == 0:
+                print()
+                print("  !!! ALL DRONES HAVE DIED - SIMULATION ENDING !!!")
+                extinction = True
+                break
 
             # Collect metrics
             if metrics_config["enabled"] and tick % metrics_config["sample_rate"] == 0:
@@ -528,11 +1055,27 @@ class Simulation:
                 if tick % tick_rate == 0 and tick > 0:
                     elapsed = time.time() - self.start_time
                     pct = (tick / total_ticks) * 100
-                    print(f"  [{pct:5.1f}%] Tick {tick:5d} | "
-                          f"Spread: {metrics['swarm_spread']:5.1f} | "
-                          f"Nearest: {metrics['avg_nearest_neighbor']:4.1f} | "
-                          f"Collisions: {metrics['collisions']:2d} | "
-                          f"Coverage: {metrics['coverage_percent']:5.1f}%")
+                    base_msg = (f"  [{pct:5.1f}%] Tick {tick:5d} | "
+                               f"Spread: {metrics['swarm_spread']:5.1f} | "
+                               f"Nearest: {metrics['avg_nearest_neighbor']:4.1f} | "
+                               f"Collisions: {metrics['collisions']:2d}")
+
+                    # Add hunger indicator if enabled
+                    hunger_info = ""
+                    if self.config.get("hunger", {}).get("enabled", True):
+                        hunger_info = f" | Hunger: {metrics['avg_hunger']:.0f}%"
+                        if metrics['starving'] > 0:
+                            hunger_info += f" ({metrics['starving']} starving)"
+                        elif metrics['desperate'] > 0:
+                            hunger_info += f" ({metrics['desperate']} desperate)"
+
+                    # Add mode-specific info
+                    if "FEED_QUEEN" in modes and self.food_sources:
+                        print(f"{base_msg} | Queen: {metrics['queen_food']:.0f} | Trips: {metrics['trips_completed']}{hunger_info}")
+                    elif self.food_sources:
+                        print(f"{base_msg} | Food: {metrics['food_consumed_pct']:.0f}% consumed{hunger_info}")
+                    else:
+                        print(f"{base_msg} | Coverage: {metrics['coverage_percent']:5.1f}%{hunger_info}")
 
             # Maintain tick rate
             elapsed = time.time() - tick_start
@@ -545,16 +1088,38 @@ class Simulation:
 
         print()
         print("=" * 60)
-        print("    SIMULATION COMPLETE")
+        if extinction:
+            print("    SIMULATION ENDED - EXTINCTION")
+        else:
+            print("    SIMULATION COMPLETE")
         print("=" * 60)
         print(f"    Actual duration:     {total_time:.2f}s")
         print(f"    Effective tick rate: {effective_rate:.1f} Hz")
+        if extinction:
+            print(f"    Cause:               All drones died")
 
         if self.metrics_history:
             final = self.metrics_history[-1]
             print(f"    Final spread:        {final['swarm_spread']:.1f}")
             print(f"    Final collisions:    {final['collisions']}")
             print(f"    Final coverage:      {final['coverage_percent']:.1f}%")
+
+            # Food summary if enabled
+            if self.food_sources:
+                print(f"    Food consumed:       {final['food_consumed_pct']:.1f}%")
+                print(f"    Food depleted:       {final['food_depleted']}/{len(self.food_sources)} sources")
+
+            # FEED_QUEEN summary
+            if "FEED_QUEEN" in modes:
+                print(f"    Queen food:          {final['queen_food']:.1f}")
+                print(f"    Trips completed:     {final['trips_completed']}")
+                print(f"    Active carriers:     {final['carriers']}")
+
+            # Hunger summary if enabled
+            if self.config.get("hunger", {}).get("enabled", True):
+                print(f"    Final avg hunger:    {final['avg_hunger']:.1f}%")
+                print(f"    Starving drones:     {final['starving']}")
+                print(f"    Desperate drones:    {final['desperate']}")
 
         print("=" * 60)
 
@@ -578,9 +1143,14 @@ Examples:
   python simulate.py --drones 100 --mode BOIDS
   python simulate.py --drones 200 --tick-rate 60 --duration 30
   python simulate.py --mode FLOCK --spawn center
+  python simulate.py --mode FORAGE --food-sources 5 --food-spread scattered
+  python simulate.py --mode "FORAGE,AVOID" --food-sources 5 --drones 40
 
-Available modes: RANDOM, AVOID, FLOCK, BOIDS, SWARM, SCATTER
-Spawn patterns: random, center, corners, line
+Available modes: RANDOM, AVOID, FLOCK, ALIGN, BOIDS, SWARM, SCATTER, FORAGE, FEED_QUEEN
+  - Combine modes with commas: --mode "FORAGE,AVOID" or --mode "FLOCK,AVOID"
+  - BOIDS = preset combo of AVOID+FLOCK+ALIGN
+Spawn patterns: random, center, corners, line, queen
+Food spread: scattered, clustered, corners, center, perimeter
         """
     )
 
@@ -592,6 +1162,19 @@ Spawn patterns: random, center, corners, line
     parser.add_argument("--grid-size", type=int, help="Grid size (NxN)")
     parser.add_argument("--save-state", action="store_true", help="Save final state as JSON")
     parser.add_argument("--no-live", action="store_true", help="Disable live dashboard updates")
+
+    # Food arguments
+    parser.add_argument("--food-sources", type=int, help="Number of food sources (enables food)")
+    parser.add_argument("--food-amount", type=int, help="Starting amount per food source")
+    parser.add_argument("--food-spread", type=str, help="Food distribution (scattered/clustered/corners/center/perimeter)")
+    parser.add_argument("--food-radius", type=int, help="Size of each food patch")
+    parser.add_argument("--food-detection", type=int, help="How far drones can smell food (default: 20)")
+
+    # Hunger arguments
+    parser.add_argument("--hunger-decay", type=int, help="Ticks between hunger decrements (default: 10)")
+    parser.add_argument("--no-hunger", action="store_true", help="Disable hunger system")
+    parser.add_argument("--death-mode", type=str, choices=["yes", "no", "respawn"],
+                        help="What happens when drones starve: yes=die, no=freeze, respawn=die and respawn at queen")
 
     args = parser.parse_args()
 
@@ -615,6 +1198,43 @@ Spawn patterns: random, center, corners, line
         config["recording"]["enabled"] = True
     if args.no_live:
         config["simulation"]["live_view"] = False
+
+    # Food configuration overrides
+    if args.food_sources:
+        if "food" not in config:
+            config["food"] = {}
+        config["food"]["enabled"] = True
+        config["food"]["sources"] = args.food_sources
+    if args.food_amount:
+        if "food" not in config:
+            config["food"] = {}
+        config["food"]["amount"] = args.food_amount
+    if args.food_spread:
+        if "food" not in config:
+            config["food"] = {}
+        config["food"]["spread"] = args.food_spread.lower()
+    if args.food_radius:
+        if "food" not in config:
+            config["food"] = {}
+        config["food"]["radius"] = args.food_radius
+    if args.food_detection:
+        if "food" not in config:
+            config["food"] = {}
+        config["food"]["detection_radius"] = args.food_detection
+
+    # Hunger configuration overrides
+    if args.hunger_decay:
+        if "hunger" not in config:
+            config["hunger"] = {}
+        config["hunger"]["decay_interval"] = args.hunger_decay
+    if args.no_hunger:
+        if "hunger" not in config:
+            config["hunger"] = {}
+        config["hunger"]["enabled"] = False
+    if args.death_mode:
+        if "hunger" not in config:
+            config["hunger"] = {}
+        config["hunger"]["death_mode"] = args.death_mode
 
     # Run simulation
     sim = Simulation(config)

@@ -121,3 +121,56 @@ function generateSimulatedData(drones, frameCount = 200) {
 
 ## Effort Estimate
 - Small/Medium change - mostly JavaScript in the playback template
+
+---
+
+# Plan: End Simulation When All Drones Die
+
+## Goal
+End the simulation early if all drones die (when death_mode is "yes"), rather than continuing to run with zero drones.
+
+## Changes Required
+
+### 1. Modify `run()` in simulate.py
+
+Add a check after `self.tick()` in the simulation loop:
+
+```python
+# Simulation loop
+for tick in range(total_ticks):
+    tick_start = time.time()
+
+    # Run simulation tick
+    self.tick()
+
+    # Check for extinction (all drones dead)
+    if len(self.drones) == 0:
+        print()
+        print("  !!! ALL DRONES HAVE DIED - SIMULATION ENDING !!!")
+        break
+
+    # ... rest of loop
+```
+
+### 2. Update final report
+
+Add indication that simulation ended due to extinction vs normal completion:
+
+```python
+# After the loop
+if len(self.drones) == 0:
+    print("    Ended:               EXTINCTION (all drones died)")
+else:
+    print("    Ended:               COMPLETED")
+```
+
+## Files to Modify
+- `simulate.py`: Add extinction check in `run()` loop and final report
+
+## Testing
+
+```bash
+python simulate.py --mode FORAGE --food-sources 0 --drones 5 --duration 30 --hunger-decay 2 --death-mode yes --no-live
+```
+
+Expected: Simulation should end around tick 200 with extinction message instead of running full 30 seconds.

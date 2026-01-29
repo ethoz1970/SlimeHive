@@ -9,13 +9,166 @@
 }
 
 .panel-left {
-    width: 20%;
+    flex: 1;
     min-width: 150px;
-    max-width: 50%;
+    max-width: 400px;
+}
+
+.panel-center {
+    flex: 1;
+    min-width: 200px;
 }
 
 .panel-right {
     flex: 1;
+    min-width: 150px;
+    max-width: 400px;
+}
+
+/* Parameters Panel */
+#parameters-panel {
+    padding: 10px;
+    font-size: 12px;
+}
+
+/* Visualization Mode Selector */
+.viz-mode-select {
+    width: 100%;
+    background: #111;
+    color: #0af;
+    border: 1px solid #333;
+    padding: 5px;
+    font-family: monospace;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.viz-mode-select:hover {
+    border-color: #0af;
+}
+
+.viz-mode-select:focus {
+    outline: none;
+    border-color: #0f0;
+}
+
+.param-section {
+    margin-bottom: 12px;
+    border-bottom: 1px solid #222;
+    padding-bottom: 8px;
+}
+
+.param-label {
+    color: #666;
+    font-size: 10px;
+    margin-bottom: 2px;
+}
+
+.param-value {
+    color: #0af;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+/* Editable parameter sections */
+.param-header {
+    color: #888;
+    font-size: 10px;
+    margin-top: 15px;
+    margin-bottom: 5px;
+    padding-top: 10px;
+    border-top: 1px solid #333;
+    letter-spacing: 1px;
+}
+
+.param-editable {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 5px;
+}
+
+.param-editable .param-label {
+    margin-bottom: 0;
+}
+
+.param-editable input {
+    width: 55px;
+    background: #111;
+    color: #0f0;
+    border: 1px solid #333;
+    padding: 3px 5px;
+    font-family: monospace;
+    font-size: 12px;
+    text-align: right;
+}
+
+.param-editable input:focus {
+    border-color: #0f0;
+    outline: none;
+}
+
+.param-editable input:hover {
+    border-color: #0af;
+}
+
+.config-select {
+    width: 90px;
+    background: #111;
+    color: #0f0;
+    border: 1px solid #333;
+    padding: 3px 5px;
+    font-family: monospace;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.config-select:focus {
+    border-color: #0f0;
+    outline: none;
+}
+
+.config-select:hover {
+    border-color: #0af;
+}
+
+.config-buttons {
+    display: flex;
+    gap: 4px;
+    margin-top: 10px;
+}
+
+#apply-config-btn {
+    flex: 3;
+    padding: 8px;
+    background: #020;
+    color: #0f0;
+    border: 1px solid #0f0;
+    font-family: monospace;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+#apply-config-btn:hover {
+    background: #0f0;
+    color: #000;
+}
+
+#reset-config-btn {
+    flex: 1;
+    padding: 8px;
+    background: #200;
+    color: #f80;
+    border: 1px solid #f80;
+    font-family: monospace;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+#reset-config-btn:hover {
+    background: #f80;
+    color: #000;
 }
 
 /* Resizer Handle */
@@ -52,8 +205,8 @@ img.feed {
 /* Drone Registry */
 #drone-registry {
     padding: 10px;
-    font-size: 12px;
-    height: 150px;
+    font-size: 11px;
+    height: calc(100vh - 150px);
     overflow-y: auto;
     background: #000;
 }
