@@ -128,12 +128,17 @@ class SimulationRecorder:
         """Capture current state as keyframe"""
         drones = {}
         for did, d in sim.drones.items():
-            drones[did] = {
+            drone_data = {
                 "x": d["x"], "y": d["y"],
                 "hunger": d.get("hunger", 100),
                 "state": d.get("state", "searching"),
                 "type": d.get("type", "worker")
             }
+            # Include trail data (last 10 positions)
+            trail = d.get("trail", [])
+            if trail:
+                drone_data["trail"] = trail[-10:]
+            drones[did] = drone_data
 
         food_state = []
         for f in sim.food_sources:
@@ -259,10 +264,17 @@ class VideoRecorder:
             )
             ax.add_patch(food_rect)
 
-        # Death markers
+            # Food amount text
+            if not food["consumed"]:
+                ax.text(food["x"], food["y"], f'{int(food["amount"])}',
+                        color='white', fontsize=7, ha='center', va='center',
+                        fontweight='bold')
+
+        # Death markers - larger for hoppers
         for marker in sim.death_markers:
+            size = 10 if marker.get("type") == "hopper" else 6
             ax.plot(marker["x"], marker["y"], 'x', color='red',
-                    markersize=6, markeredgewidth=2)
+                    markersize=size, markeredgewidth=2)
 
         # Food markers (hopper finds)
         for marker in sim.food_markers:
@@ -278,12 +290,38 @@ class VideoRecorder:
         qx, qy = sim.queen_pos
         ax.plot(qx, qy, 'D', color='white', markersize=10,
                 markeredgecolor='gold', markeredgewidth=2)
+        ax.text(qx, qy, 'Q', color='black', fontsize=6,
+                ha='center', va='center', fontweight='bold')
 
         # Sentinel
         sentinel_x = sim.grid_size - sim.margin
         sentinel_y = sim.grid_size - sim.margin
         ax.plot(sentinel_x, sentinel_y, '^', color='blue', markersize=8,
                 markeredgecolor='cyan', markeredgewidth=1)
+        ax.text(sentinel_x, sentinel_y, 'S', color='white', fontsize=6,
+                ha='center', va='center', fontweight='bold')
+
+        # Drone trails
+        for drone_id, drone in sim.drones.items():
+            trail = drone.get("trail", [])
+            if len(trail) >= 2:
+                trail_x = [p[0] for p in trail]
+                trail_y = [p[1] for p in trail]
+                hue = (hash(drone_id) % 360) / 360.0
+                if hue < 1/6:
+                    r, g, b = 1, hue * 6, 0
+                elif hue < 2/6:
+                    r, g, b = 1 - (hue - 1/6) * 6, 1, 0
+                elif hue < 3/6:
+                    r, g, b = 0, 1, (hue - 2/6) * 6
+                elif hue < 4/6:
+                    r, g, b = 0, 1 - (hue - 3/6) * 6, 1
+                elif hue < 5/6:
+                    r, g, b = (hue - 4/6) * 6, 0, 1
+                else:
+                    r, g, b = 1, 0, 1 - (hue - 5/6) * 6
+                ax.plot(trail_x, trail_y, '-', color=(r, g, b),
+                        alpha=0.4, linewidth=1)
 
         # Drones
         for drone_id, drone in sim.drones.items():
@@ -302,11 +340,16 @@ class VideoRecorder:
                 r, g, b = 1, 0, 1 - (hue - 5/6) * 6
 
             if drone.get("type") == "hopper":
-                ax.plot(drone["x"], drone["y"], 's', color=(r, g, b),
-                        markersize=6, markeredgecolor='white', markeredgewidth=0.5)
+                ax.plot(drone["x"], drone["y"], '^', color='cyan',
+                        markersize=7, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 ax.plot(drone["x"], drone["y"], 'o', color=(r, g, b),
                         markersize=5, markeredgecolor='white', markeredgewidth=0.5)
+
+            # Carrying indicator - green ring
+            if drone.get("state") == "carrying":
+                ax.plot(drone["x"], drone["y"], 'o', color='none',
+                        markersize=8, markeredgecolor='lime', markeredgewidth=2)
 
         # Configure axes
         ax.set_xlim(0, sim.grid_size)
@@ -314,8 +357,11 @@ class VideoRecorder:
         ax.set_aspect('equal')
         ax.axis('off')
 
-        # Add timestamp overlay
-        ax.text(5, sim.grid_size - 5, f"t={elapsed_time:.1f}s",
+        # Add stats overlay
+        stats_text = f"t={elapsed_time:.1f}s | {len(sim.drones)} drones"
+        if sim.food_sources:
+            stats_text += f" | Queen: {sim.queen_food:.0f}"
+        ax.text(5, sim.grid_size - 5, stats_text,
                 color='white', fontsize=10, verticalalignment='top',
                 fontfamily='monospace', alpha=0.8)
 
@@ -1281,7 +1327,8 @@ class Simulation:
                 if self.recorder:
                     elapsed = time.time() - self.start_time if self.start_time else 0
                     self.recorder.record_event("death", elapsed,
-                        drone=drone_id, x=drone["x"], y=drone["y"])
+                        drone=drone_id, x=drone["x"], y=drone["y"],
+                        drone_type=drone.get("type", "worker"))
 
                 if death_mode == "yes":
                     # Permanent death - move to dead_drones for registry display
@@ -1533,9 +1580,16 @@ class Simulation:
             )
             ax.add_patch(food_rect)
 
-        # 5. Death markers - red X marks at drone death locations
+            # Food amount text
+            if not food["consumed"]:
+                ax.text(food["x"], food["y"], f'{int(food["amount"])}',
+                        color='white', fontsize=7, ha='center', va='center',
+                        fontweight='bold')
+
+        # 5. Death markers - red X marks at drone death locations (larger for hoppers)
         for marker in self.death_markers:
-            ax.plot(marker["x"], marker["y"], 'x', color='red', markersize=6, markeredgewidth=2)
+            size = 10 if marker.get("type") == "hopper" else 6
+            ax.plot(marker["x"], marker["y"], 'x', color='red', markersize=size, markeredgewidth=2)
 
         # 6. Food markers - yellow X marks where hoppers found food
         for marker in self.food_markers:
@@ -1548,11 +1602,37 @@ class Simulation:
         # 8. Queen - white diamond at (10,10)
         qx, qy = self.queen_pos
         ax.plot(qx, qy, 'D', color='white', markersize=10, markeredgecolor='gold', markeredgewidth=2)
+        ax.text(qx, qy, 'Q', color='black', fontsize=6,
+                ha='center', va='center', fontweight='bold')
 
         # 9. Sentinel - blue triangle at (90,90)
         sentinel_x = self.grid_size - self.margin
         sentinel_y = self.grid_size - self.margin
         ax.plot(sentinel_x, sentinel_y, '^', color='blue', markersize=8, markeredgecolor='cyan', markeredgewidth=1)
+        ax.text(sentinel_x, sentinel_y, 'S', color='white', fontsize=6,
+                ha='center', va='center', fontweight='bold')
+
+        # 9.5 Drone trails
+        for drone_id, drone in self.drones.items():
+            trail = drone.get("trail", [])
+            if len(trail) >= 2:
+                trail_x = [p[0] for p in trail]
+                trail_y = [p[1] for p in trail]
+                hue = (hash(drone_id) % 360) / 360.0
+                if hue < 1/6:
+                    r, g, b = 1, hue * 6, 0
+                elif hue < 2/6:
+                    r, g, b = 1 - (hue - 1/6) * 6, 1, 0
+                elif hue < 3/6:
+                    r, g, b = 0, 1, (hue - 2/6) * 6
+                elif hue < 4/6:
+                    r, g, b = 0, 1 - (hue - 3/6) * 6, 1
+                elif hue < 5/6:
+                    r, g, b = (hue - 4/6) * 6, 0, 1
+                else:
+                    r, g, b = 1, 0, 1 - (hue - 5/6) * 6
+                ax.plot(trail_x, trail_y, '-', color=(r, g, b),
+                        alpha=0.4, linewidth=1)
 
         # 10. Drones - colored circles at current positions
         for i, (drone_id, drone) in enumerate(self.drones.items()):
@@ -1574,9 +1654,14 @@ class Simulation:
 
             # Different marker for hoppers vs workers
             if drone.get("type") == "hopper":
-                ax.plot(drone["x"], drone["y"], 's', color=(r, g, b), markersize=6, markeredgecolor='white', markeredgewidth=0.5)
+                ax.plot(drone["x"], drone["y"], '^', color='cyan', markersize=7, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 ax.plot(drone["x"], drone["y"], 'o', color=(r, g, b), markersize=5, markeredgecolor='white', markeredgewidth=0.5)
+
+            # Carrying indicator - green ring
+            if drone.get("state") == "carrying":
+                ax.plot(drone["x"], drone["y"], 'o', color='none',
+                        markersize=8, markeredgecolor='lime', markeredgewidth=2)
 
         # Configure axes
         ax.set_xlim(0, self.grid_size)

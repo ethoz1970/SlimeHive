@@ -58,22 +58,33 @@ async function loadRecording(url) {
     document.getElementById('recording-list').innerHTML = '<div>Loading...</div>';
 
     try {
+        console.log('Fetching:', url);
         const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
         const data = await response.arrayBuffer();
+        console.log('Received bytes:', data.byteLength);
 
         // Decompress if gzipped
         let jsonStr;
         const bytes = new Uint8Array(data);
         if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            console.log('Decompressing gzip...');
             jsonStr = pako.inflate(bytes, { to: 'string' });
         } else {
             jsonStr = new TextDecoder().decode(data);
         }
 
+        console.log('Parsing JSON, length:', jsonStr.length);
         recording = JSON.parse(jsonStr);
+        console.log('Recording loaded:', recording.metadata);
         initPlayback();
 
     } catch (e) {
+        console.error('Load error:', e);
         alert('Failed to load recording: ' + e.message);
         loadAvailableRecordings();
     }
@@ -232,7 +243,8 @@ function getInterpolatedState(time) {
                 y: d1.y + (d2.y - d1.y) * t,
                 hunger: d1.hunger,
                 state: d1.state,
-                type: d1.type
+                type: d1.type,
+                trail: d1.trail || []
             };
         }
     }
@@ -271,21 +283,64 @@ function renderFrame(time) {
     // Death markers (accumulated)
     drawDeathMarkers(time);
 
+    // Draw trails first (behind drones)
+    for (const [id, drone] of Object.entries(state.drones)) {
+        const trail = drone.trail || [];
+        if (trail.length >= 2) {
+            const hue = stringToHue(id);
+            ctx.strokeStyle = `hsla(${hue}, 70%, 50%, 0.4)`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(trail[0][0] * CELL_SIZE, (GRID_SIZE - trail[0][1]) * CELL_SIZE);
+            for (let i = 1; i < trail.length; i++) {
+                ctx.lineTo(trail[i][0] * CELL_SIZE, (GRID_SIZE - trail[i][1]) * CELL_SIZE);
+            }
+            ctx.stroke();
+        }
+    }
+
     // Drones
     for (const [id, drone] of Object.entries(state.drones)) {
-        const hue = stringToHue(id);
-        const color = `hsl(${hue}, 70%, 50%)`;
         const cx = drone.x * CELL_SIZE;
         const cy = (GRID_SIZE - drone.y) * CELL_SIZE;
 
-        ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
+        if (drone.type === 'hopper') {
+            // Cyan triangle for hoppers
+            ctx.fillStyle = '#0ff';
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - 5);
+            ctx.lineTo(cx + 4, cy + 3);
+            ctx.lineTo(cx - 4, cy + 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        } else {
+            // Colored circle for workers
+            const hue = stringToHue(id);
+            const color = `hsl(${hue}, 70%, 50%)`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        }
+
+        // Carrying indicator - green ring
+        if (drone.state === 'carrying') {
+            ctx.beginPath();
+            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctx.strokeStyle = '#0f0';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
     }
+
+    // Stats overlay
+    drawStatsOverlay(state, time);
 }
 
 function drawGhostGrid(grid, alpha) {
@@ -349,6 +404,15 @@ function drawFood(foodState) {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1;
         ctx.strokeRect(cx - r, cy - r, r * 2, r * 2);
+
+        // Food amount text
+        if (!state.consumed) {
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(Math.floor(state.amount), cx, cy);
+        }
     }
 }
 
@@ -366,6 +430,13 @@ function drawQueen(pos) {
     ctx.strokeStyle = '#ffd700';
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    // Queen label
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 8px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Q', cx, cy);
 }
 
 function drawSentinel() {
@@ -381,6 +452,13 @@ function drawSentinel() {
     ctx.strokeStyle = '#0ff';
     ctx.lineWidth = 1;
     ctx.stroke();
+
+    // Sentinel label
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 8px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('S', cx, cy);
 }
 
 function drawDeathMarkers(upToTime) {
@@ -390,13 +468,26 @@ function drawDeathMarkers(upToTime) {
     for (const e of events) {
         const cx = e.x * CELL_SIZE;
         const cy = (GRID_SIZE - e.y) * CELL_SIZE;
+        const size = e.drone_type === 'hopper' ? 6 : 4;  // Larger for hoppers
         ctx.beginPath();
-        ctx.moveTo(cx - 4, cy - 4);
-        ctx.lineTo(cx + 4, cy + 4);
-        ctx.moveTo(cx + 4, cy - 4);
-        ctx.lineTo(cx - 4, cy + 4);
+        ctx.moveTo(cx - size, cy - size);
+        ctx.lineTo(cx + size, cy + size);
+        ctx.moveTo(cx + size, cy - size);
+        ctx.lineTo(cx - size, cy + size);
         ctx.stroke();
     }
+}
+
+function drawStatsOverlay(state, time) {
+    const droneCount = Object.keys(state.drones).length;
+    const queenFood = state.metrics?.queen_food || 0;
+    const text = `t=${time.toFixed(1)}s | ${droneCount} drones | Queen: ${Math.floor(queenFood)}`;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(text, 8, 8);
 }
 
 function stringToHue(str) {
