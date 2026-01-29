@@ -1,5 +1,5 @@
 // Configuration - UPDATE THESE FOR YOUR REPO
-const GITHUB_OWNER = 'YOUR_USERNAME';
+const GITHUB_OWNER = 'ethoz1970';
 const GITHUB_REPO = 'SlimeHive';
 const RELEASE_TAG = 'recordings';
 

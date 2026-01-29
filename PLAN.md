@@ -1,226 +1,172 @@
-# Plan: Save Final Map Image on Simulation End
+# Plan: Virtual Dashboard Decoupling
 
-## Goal
-Automatically save a PNG image of the final map state when a simulation ends.
+## Problem
 
----
+Currently when running virtual simulations on MacBook:
+- `dashboard_hud.py` in remote mode proxies requests to Pi, so snapshots/archives end up on Pi
+- `simulate.py` saves recordings locally, but there's no way to create snapshots locally
+- No clear separation between "Pi + real drones" and "MacBook pure virtual" workflows
 
-## Options
+## Solution
 
-### Option A: Python-side Rendering (Recommended)
-Generate the image directly in Python using PIL/Pillow when simulation ends.
+Create `dashboard_virtual.py` - a standalone dashboard for pure virtual simulations that:
+1. **No MQTT** - No connection to queen_brain
+2. **No Camera** - No rpicam dependency
+3. **No Remote Proxy** - All data is local
+4. **Local Snapshots** - Archive to local `snapshots/` directory
+5. **Local Recordings** - Already handled by simulate.py
 
-**Pros:**
-- Works without dashboard running
-- Self-contained in simulate.py
-- No browser dependencies
+## Architecture
 
-**Cons:**
-- Need to replicate drawing logic in Python
-- May not be pixel-perfect match to dashboard
-
-### Option B: Dashboard-triggered Save
-Have the dashboard detect simulation end and save canvas as PNG.
-
-**Pros:**
-- Exact visual match to dashboard
-- No code duplication
-
-**Cons:**
-- Requires dashboard to be running
-- Need IPC between simulation and dashboard
-
-### Option C: Headless Browser
-Use Puppeteer/Playwright to screenshot dashboard.
-
-**Pros:**
-- Exact match
-
-**Cons:**
-- Heavy dependency
-- Complex setup
-
----
-
-## Recommended: Option A (Python PIL)
-
-### Implementation
-
-#### 1. Add PIL dependency
-
-Already available in most Python environments, or:
-```bash
-pip install Pillow
+```
+Pi (Physical)                         MacBook (Virtual)
+┌─────────────────────┐              ┌─────────────────────┐
+│ queen_brain.py      │              │ simulate.py         │
+│ dashboard_hud.py    │              │ dashboard_virtual.py│
+│ snapshots/          │              │ snapshots/          │
+│ recordings/         │              │ recordings/         │
+└─────────────────────┘              └─────────────────────┘
+     ↑                                    ↑
+     │                                    │
+  Real drones                      Virtual drones only
+  + MQTT                           No MQTT needed
 ```
 
-#### 2. Create `save_final_image()` method in Simulation class
+## Files to Create/Modify
+
+| File | Action | Description |
+|------|--------|-------------|
+| `dashboard_virtual.py` | Create | Standalone virtual simulation dashboard |
+| `templates/live_virtual.html` | Create | Template with snapshot button (no camera feed) |
+
+## Implementation Details
+
+### dashboard_virtual.py
+
+Stripped-down version of `dashboard_hud.py`:
+- No MQTT client (`paho.mqtt` not imported)
+- No camera system (no `rpicam`, no `PIL` for camera)
+- No remote mode/proxy (no `QUEEN_IP` handling)
+- All file paths are local to script directory
+- New `POST /snapshot` endpoint to create local archives
 
 ```python
-from PIL import Image, ImageDraw
+# Key endpoints:
+GET  /              → Serve live_virtual.html
+GET  /data          → Read local hive_state.json
+POST /snapshot      → Create archive in local snapshots/
+GET  /api/archives  → List local snapshots/
+GET  /api/archive/<file> → Load specific archive
+DELETE /api/archive/<file> → Delete archive
+POST /config        → Update hive_config_live.json
+GET  /config        → Get current config
+GET  /playback      → Serve playback.html
+```
 
-def save_final_image(self, filename=None):
-    """Save final map state as PNG image"""
-    if filename is None:
+### New Snapshot Endpoint
+
+```python
+@app.route('/snapshot', methods=['POST'])
+def create_snapshot():
+    """Create archive of current simulation state"""
+    try:
+        # Read current state
+        with open(HISTORY_FILE, 'r') as f:
+            state = json.load(f)
+
+        # Create snapshot directory
+        snapshots_dir = os.path.join(BASE_DIR, "snapshots")
+        os.makedirs(snapshots_dir, exist_ok=True)
+
+        # Generate filename
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        mode = self.config["drones"]["behavior_mode"]
-        filename = os.path.join(BASE_DIR, "analysis", "screenshots",
-                                f"final_{mode}_{timestamp}.png")
+        filename = f"hive_state_ARCHIVE_{timestamp}.json"
+        filepath = os.path.join(snapshots_dir, filename)
 
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+        # Save snapshot
+        with open(filepath, 'w') as f:
+            json.dump(state, f, indent=2)
 
-    # Image size (match dashboard: 800x800)
-    size = 800
-    scale = size / self.grid_size
-
-    # Create black background
-    img = Image.new('RGB', (size, size), color='black')
-    draw = ImageDraw.Draw(img)
-
-    # Draw pheromone grid (ghost_grid)
-    for x in range(self.grid_size):
-        for y in range(self.grid_size):
-            ghost = self.ghost_grid[x][y]
-            if ghost > 10:
-                intensity = min(255, int(ghost))
-                alpha = intensity // 2
-                # White with varying intensity
-                px = int(x * scale)
-                py = int((self.grid_size - 1 - y) * scale)
-                draw.rectangle([px, py, px + scale, py + scale],
-                              fill=(intensity, intensity, intensity))
-
-    # Draw food sources
-    for food in self.food_sources:
-        px = int(food["x"] * scale)
-        py = int((self.grid_size - 1 - food["y"]) * scale)
-        radius = int(food["radius"] * scale)
-
-        if food["consumed"]:
-            # Gray outline for depleted
-            draw.rectangle([px - radius, py - radius, px + radius, py + radius],
-                          outline='#888888', width=2)
-        else:
-            # Color based on amount (green -> red)
-            ratio = food["amount"] / food["max_amount"]
-            r = int(255 * (1 - ratio))
-            g = int(255 * ratio)
-            draw.rectangle([px - radius, py - radius, px + radius, py + radius],
-                          fill=(r, g, 0), outline=(r//2, g//2, 0), width=2)
-
-    # Draw death markers (red X)
-    for marker in self.death_markers:
-        px = int(marker["x"] * scale)
-        py = int((self.grid_size - 1 - marker["y"]) * scale)
-        size_x = 12 if marker.get("type") == "hopper" else 6
-        draw.line([px - size_x, py - size_x, px + size_x, py + size_x], fill='red', width=2)
-        draw.line([px + size_x, py - size_x, px - size_x, py + size_x], fill='red', width=2)
-
-    # Draw food markers (yellow X)
-    for marker in self.food_markers:
-        px = int(marker["x"] * scale)
-        py = int((self.grid_size - 1 - marker["y"]) * scale)
-        draw.line([px - 10, py - 10, px + 10, py + 10], fill='yellow', width=3)
-        draw.line([px + 10, py - 10, px - 10, py + 10], fill='yellow', width=3)
-
-    # Draw smell markers (white X)
-    for marker in self.smell_markers:
-        px = int(marker["x"] * scale)
-        py = int((self.grid_size - 1 - marker["y"]) * scale)
-        draw.line([px - 6, py - 6, px + 6, py + 6], fill='white', width=2)
-        draw.line([px + 6, py - 6, px - 6, py + 6], fill='white', width=2)
-
-    # Draw Queen (white diamond)
-    qx = int(self.queen_pos[0] * scale)
-    qy = int((self.grid_size - 1 - self.queen_pos[1]) * scale)
-    draw.polygon([(qx, qy-8), (qx+8, qy), (qx, qy+8), (qx-8, qy)], fill='white')
-
-    # Draw remaining drones
-    for drone_id, drone in self.drones.items():
-        px = int(drone["x"] * scale)
-        py = int((self.grid_size - 1 - drone["y"]) * scale)
-
-        if drone.get("type") == "hopper":
-            # Cyan triangle for hoppers
-            draw.polygon([(px, py-8), (px+6, py+6), (px-6, py+6)], fill='cyan')
-        else:
-            # Circle for regular drones
-            draw.ellipse([px-4, py-4, px+4, py+4], fill='lime')
-
-    # Draw dead drones (dimmer)
-    for drone_id, drone in self.dead_drones.items():
-        px = int(drone["x"] * scale)
-        py = int((self.grid_size - 1 - drone["y"]) * scale)
-        draw.ellipse([px-3, py-3, px+3, py+3], fill='#440000')
-
-    # Save image
-    img.save(filename)
-    print(f"    Final image saved: {filename}")
-    return filename
+        return jsonify({'success': True, 'filename': filename})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 ```
 
-#### 3. Call from `run()` at end of simulation
+### live_virtual.html
 
-```python
-def run(self):
-    # ... simulation loop ...
+Based on `live.html` with these changes:
+1. Remove camera feed section (or replace with placeholder)
+2. Add SNAPSHOT button in control panel
+3. Remove MQTT-dependent controls that don't work without queen_brain
+4. Keep simulation controls that work via `hive_config_live.json`
 
-    # After final report
-    if self.config.get("save_image", True):
-        self.save_final_image()
+```html
+<!-- Add to control panel -->
+<button onclick="createSnapshot()" class="btn btn-snapshot">SNAPSHOT</button>
+
+<script>
+async function createSnapshot() {
+    try {
+        const res = await fetch('/snapshot', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showNotification('Snapshot saved: ' + data.filename);
+        } else {
+            showNotification('Error: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showNotification('Snapshot failed', 'error');
+    }
+}
+</script>
 ```
 
-#### 4. Add CLI argument
+## Workflow
 
-```python
-parser.add_argument("--no-save-image", action="store_true",
-                    help="Don't save final map image")
-
-# In config application:
-if args.no_save_image:
-    config["save_image"] = False
-```
-
----
-
-## Files to Modify
-
-1. **simulate.py**
-   - Add `from PIL import Image, ImageDraw` import
-   - Add `save_final_image()` method
-   - Call from `run()` after simulation ends
-   - Add CLI argument `--no-save-image`
-
-2. **requirements.txt** (if exists)
-   - Add `Pillow` if not already present
-
----
-
-## Output Location
-
-Images saved to: `analysis/screenshots/final_{MODE}_{TIMESTAMP}.png`
-
-Example: `analysis/screenshots/final_FORAGE_2024-01-29_143052.png`
-
----
-
-## Testing
-
+**Virtual Simulation on MacBook:**
 ```bash
-# Run simulation - image auto-saved
-python simulate.py --mode FORAGE --food-sources 3 --drones 10 --duration 30
+# Terminal 1: Run simulation with recording
+python simulate.py --mode BOIDS --drones 50 --duration 60 --record
 
-# Check output
-ls -la analysis/screenshots/
+# Terminal 2: View in dashboard
+python dashboard_virtual.py
+# Open http://localhost:5050
 
-# Disable image saving
-python simulate.py --mode FORAGE --drones 10 --no-save-image
+# Click SNAPSHOT button anytime to save current state locally
+# Recording auto-saves to recordings/ when simulation ends
 ```
 
----
+**Pi with Real Drones:**
+```bash
+# On Pi - unchanged workflow
+python queen_brain.py
+python dashboard_hud.py  # Local mode
+```
 
-## Future Enhancements
+## Port Configuration
 
-- Add boundary rectangle to image
-- Add text overlay with stats (drone count, food consumed, etc.)
-- Option to save at regular intervals (timelapse)
-- Save as animated GIF of simulation
+- `dashboard_virtual.py` defaults to port 5050
+- Same as remote `dashboard_hud.py` for consistency
+- Avoids conflict with macOS AirPlay on port 5000
+
+## Key Differences Summary
+
+| Feature | dashboard_hud.py | dashboard_virtual.py |
+|---------|------------------|---------------------|
+| MQTT | Yes (queen_brain) | No |
+| Camera | Yes (Pi only) | No |
+| Remote proxy | Yes (QUEEN_IP) | No |
+| Snapshots | On Pi (via MQTT reset) | Local (direct button) |
+| Dependencies | paho-mqtt, PIL, requests | Flask only |
+| Port | 5000 (Pi) / 5050 (remote) | 5050 |
+
+## Verification
+
+1. Run `python simulate.py --record --drones 20 --duration 30`
+2. Run `python dashboard_virtual.py` in another terminal
+3. Open http://localhost:5050
+4. Verify live view shows simulation
+5. Click SNAPSHOT - verify file in local `snapshots/`
+6. Go to /playback - verify local archives listed
+7. Verify recording saved to local `recordings/` after simulation ends
+8. All files should be in MacBook's SlimeHive directory, not Pi
