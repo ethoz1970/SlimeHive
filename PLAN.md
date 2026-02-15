@@ -1,172 +1,74 @@
-# Plan: Virtual Dashboard Decoupling
+# Plan: Add Section Headers to Drone Registry
 
-## Problem
+## Summary
+Update the dashboard's drone registry in virtualization mode to show section headers with colored separator lines for HOPPERS, WORKERS, and RIP (dead drones).
 
-Currently when running virtual simulations on MacBook:
-- `dashboard_hud.py` in remote mode proxies requests to Pi, so snapshots/archives end up on Pi
-- `simulate.py` saves recordings locally, but there's no way to create snapshots locally
-- No clear separation between "Pi + real drones" and "MacBook pure virtual" workflows
+## Current State
+- Living drones are mixed together, sorted by activity then alphabetically
+- Hoppers appear at top (due to sorting behavior)
+- Dead drones appear at bottom with a red separator line
 
-## Solution
-
-Create `dashboard_virtual.py` - a standalone dashboard for pure virtual simulations that:
-1. **No MQTT** - No connection to queen_brain
-2. **No Camera** - No rpicam dependency
-3. **No Remote Proxy** - All data is local
-4. **Local Snapshots** - Archive to local `snapshots/` directory
-5. **Local Recordings** - Already handled by simulate.py
-
-## Architecture
-
+## Target Layout
 ```
-Pi (Physical)                         MacBook (Virtual)
-┌─────────────────────┐              ┌─────────────────────┐
-│ queen_brain.py      │              │ simulate.py         │
-│ dashboard_hud.py    │              │ dashboard_virtual.py│
-│ snapshots/          │              │ snapshots/          │
-│ recordings/         │              │ recordings/         │
-└─────────────────────┘              └─────────────────────┘
-     ↑                                    ↑
-     │                                    │
-  Real drones                      Virtual drones only
-  + MQTT                           No MQTT needed
+HOPPERS ──────────────── (cyan line)
+> [hopper_001] H:85% SCOUTING
+> [hopper_002] H:72% SCOUTING
+
+WORKERS ──────────────── (cyan line)
+> [drone_001] H:90% RSSI:-45dB
+> [drone_002] H:65% CARRYING
+
+RIP ──────────────────── (red line)
+> [drone_003] ☠ DEAD (WORKER)
+> [hopper_003] ☠ DEAD (HOPPER)
 ```
 
-## Files to Create/Modify
+## File to Modify
+- `/Users/zeeggemorhead/sites/HiveMind/SlimeHive/static/js/live.js` - `updateDroneList()` function (lines 520-631)
 
-| File | Action | Description |
-|------|--------|-------------|
-| `dashboard_virtual.py` | Create | Standalone virtual simulation dashboard |
-| `templates/live_virtual.html` | Create | Template with snapshot button (no camera feed) |
+## Implementation
 
-## Implementation Details
+### Changes to `updateDroneList()` function
 
-### dashboard_virtual.py
+1. **Separate drones by type first** - Split living drones into hoppers and workers arrays
 
-Stripped-down version of `dashboard_hud.py`:
-- No MQTT client (`paho.mqtt` not imported)
-- No camera system (no `rpicam`, no `PIL` for camera)
-- No remote mode/proxy (no `QUEEN_IP` handling)
-- All file paths are local to script directory
-- New `POST /snapshot` endpoint to create local archives
-
-```python
-# Key endpoints:
-GET  /              → Serve live_virtual.html
-GET  /data          → Read local hive_state.json
-POST /snapshot      → Create archive in local snapshots/
-GET  /api/archives  → List local snapshots/
-GET  /api/archive/<file> → Load specific archive
-DELETE /api/archive/<file> → Delete archive
-POST /config        → Update hive_config_live.json
-GET  /config        → Get current config
-GET  /playback      → Serve playback.html
-```
-
-### New Snapshot Endpoint
-
-```python
-@app.route('/snapshot', methods=['POST'])
-def create_snapshot():
-    """Create archive of current simulation state"""
-    try:
-        # Read current state
-        with open(HISTORY_FILE, 'r') as f:
-            state = json.load(f)
-
-        # Create snapshot directory
-        snapshots_dir = os.path.join(BASE_DIR, "snapshots")
-        os.makedirs(snapshots_dir, exist_ok=True)
-
-        # Generate filename
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        filename = f"hive_state_ARCHIVE_{timestamp}.json"
-        filepath = os.path.join(snapshots_dir, filename)
-
-        # Save snapshot
-        with open(filepath, 'w') as f:
-            json.dump(state, f, indent=2)
-
-        return jsonify({'success': True, 'filename': filename})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-```
-
-### live_virtual.html
-
-Based on `live.html` with these changes:
-1. Remove camera feed section (or replace with placeholder)
-2. Add SNAPSHOT button in control panel
-3. Remove MQTT-dependent controls that don't work without queen_brain
-4. Keep simulation controls that work via `hive_config_live.json`
-
-```html
-<!-- Add to control panel -->
-<button onclick="createSnapshot()" class="btn btn-snapshot">SNAPSHOT</button>
-
-<script>
-async function createSnapshot() {
-    try {
-        const res = await fetch('/snapshot', { method: 'POST' });
-        const data = await res.json();
-        if (data.success) {
-            showNotification('Snapshot saved: ' + data.filename);
-        } else {
-            showNotification('Error: ' + data.error, 'error');
-        }
-    } catch (e) {
-        showNotification('Snapshot failed', 'error');
-    }
+2. **Create helper function for section headers**
+```javascript
+function createSectionHeader(text, color) {
+    const header = document.createElement('div');
+    header.style.cssText = `
+        color: ${color};
+        font-weight: bold;
+        margin: 8px 0 4px 0;
+        padding-bottom: 4px;
+        border-bottom: 1px solid ${color};
+        font-size: 10px;
+        letter-spacing: 1px;
+    `;
+    header.textContent = text;
+    return header;
 }
-</script>
 ```
 
-## Workflow
+3. **Update rendering order**:
+   - Add "HOPPERS" header (cyan: `#0aa`) if any hoppers exist
+   - Render all living hoppers
+   - Add "WORKERS" header (cyan: `#0aa`) if any workers exist
+   - Render all living workers
+   - Add "RIP" header (red: `#a00`) if any dead drones exist
+   - Render all dead drones
 
-**Virtual Simulation on MacBook:**
-```bash
-# Terminal 1: Run simulation with recording
-python simulate.py --mode BOIDS --drones 50 --duration 60 --record
-
-# Terminal 2: View in dashboard
-python dashboard_virtual.py
-# Open http://localhost:5050
-
-# Click SNAPSHOT button anytime to save current state locally
-# Recording auto-saves to recordings/ when simulation ends
-```
-
-**Pi with Real Drones:**
-```bash
-# On Pi - unchanged workflow
-python queen_brain.py
-python dashboard_hud.py  # Local mode
-```
-
-## Port Configuration
-
-- `dashboard_virtual.py` defaults to port 5050
-- Same as remote `dashboard_hud.py` for consistency
-- Avoids conflict with macOS AirPlay on port 5000
-
-## Key Differences Summary
-
-| Feature | dashboard_hud.py | dashboard_virtual.py |
-|---------|------------------|---------------------|
-| MQTT | Yes (queen_brain) | No |
-| Camera | Yes (Pi only) | No |
-| Remote proxy | Yes (QUEEN_IP) | No |
-| Snapshots | On Pi (via MQTT reset) | Local (direct button) |
-| Dependencies | paho-mqtt, PIL, requests | Flask only |
-| Port | 5000 (Pi) / 5050 (remote) | 5050 |
+4. **Sorting within sections**:
+   - Hoppers: active first, then inactive, alphabetically within each group
+   - Workers: active first, then inactive, alphabetically within each group
+   - Dead: alphabetically by ID
 
 ## Verification
-
-1. Run `python simulate.py --record --drones 20 --duration 30`
-2. Run `python dashboard_virtual.py` in another terminal
-3. Open http://localhost:5050
-4. Verify live view shows simulation
-5. Click SNAPSHOT - verify file in local `snapshots/`
-6. Go to /playback - verify local archives listed
-7. Verify recording saved to local `recordings/` after simulation ends
-8. All files should be in MacBook's SlimeHive directory, not Pi
+1. Run simulation with hoppers enabled: `python simulate.py --hoppers 3`
+2. Open dashboard at http://localhost:5050
+3. Verify:
+   - HOPPERS section appears with cyan header and line
+   - WORKERS section appears with cyan header and line
+   - RIP section appears when drones die with red header and line
+   - Drones are correctly categorized by type
+   - Inactive drones still appear dimmed within their sections

@@ -31,6 +31,10 @@ SENSOR_POSITIONS = {
     "SENTINEL": (90, 90)    # Top-right corner (with margin)
 }
 VIRTUAL_PREFIX = "V-"
+PHYSICAL_PREFIX = "P-"
+
+# Sequence counter for physical drone commands
+physical_drone_seq = 0
 
 # --- OPERATIONAL BOUNDARY ---
 # Drones must stay within the rectangle between Queen and Sentinel
@@ -102,6 +106,9 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe("hive/control/mode")
     client.subscribe("hive/control/virtual_swarm")
     client.subscribe("hive/control/reset")
+    # Physical drone topics
+    client.subscribe("hive/drone/+/position")
+    client.subscribe("hive/drone/+/status")
 
 def adjust_virtual_swarm(target_count):
     global active_drones
@@ -254,6 +261,60 @@ def on_message(client, userdata, msg):
                     CURRENT_MOOD = "SLEEP"
             return
 
+        # --- 1.5. PHYSICAL DRONE POSITION REPORTS ---
+        if msg.topic.startswith("hive/drone/") and msg.topic.endswith("/position"):
+            try:
+                # Extract drone ID from topic: hive/drone/{id}/position
+                parts = msg.topic.split("/")
+                drone_id = parts[2]
+                if not drone_id.startswith(PHYSICAL_PREFIX):
+                    return
+
+                data = json.loads(msg.payload.decode())
+                x = int(data.get("x", 0))
+                y = int(data.get("y", 0))
+                heading = data.get("heading", 0)
+
+                # Clamp to grid
+                x = max(0, min(GRID_SIZE - 1, x))
+                y = max(0, min(GRID_SIZE - 1, y))
+
+                # Update drone registry (same as virtual drones)
+                if drone_id not in active_drones:
+                    active_drones[drone_id] = {
+                        "x": x, "y": y, "rssi": -42,
+                        "last_seen": time.time(), "trail": [],
+                        "heading": heading, "physical": True,
+                    }
+                else:
+                    active_drones[drone_id]["x"] = x
+                    active_drones[drone_id]["y"] = y
+                    active_drones[drone_id]["heading"] = heading
+                    active_drones[drone_id]["last_seen"] = time.time()
+                    active_drones[drone_id]["physical"] = True
+
+                # Trail
+                active_drones[drone_id]["trail"].append([x, y])
+                if len(active_drones[drone_id]["trail"]) > 10:
+                    active_drones[drone_id]["trail"].pop(0)
+
+                # Deposit pheromones (physical drones affect the world)
+                if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+                    intensity = 50
+                    hive_grid[x][y] += (intensity / 10.0)
+                    if hive_grid[x][y] > 255:
+                        hive_grid[x][y] = 255
+                    ghost_grid[x][y] += 0.5
+                    if ghost_grid[x][y] > 255:
+                        ghost_grid[x][y] = 255
+
+                # Publish to logger
+                client.publish("hive/deposit", f"PHYSICAL,{drone_id},{x},{y},50,-42")
+
+            except Exception as e:
+                print(f"Physical drone position error: {e}")
+            return
+
         # --- 2. SENSORY INPUT: TACTILE (DRONE MOVEMENT) ---
         if msg.topic == "hive/deposit":
             # Format: EAR_ID, ID, X, Y, INT, RSSI
@@ -336,10 +397,196 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print(f"Sensory Error: {e}")
 
+# --- BEHAVIOR VECTOR CALCULATION ---
+def calculate_behavior_vector(drone_id, drone, mode):
+    """
+    Calculate (dx, dy) movement vector for a drone based on the current behavior mode.
+    Shared by both virtual and physical drones.
+    Returns: (dx, dy) where each is -1, 0, or 1.
+    """
+    dx, dy = 0, 0
+
+    if mode == "FIND_QUEEN":
+        target_x, target_y = SENSOR_POSITIONS["QUEEN"]
+        vx = target_x - drone["x"]
+        vy = target_y - drone["y"]
+        dx = int(np.sign(vx)) if abs(vx) > 0 else 0
+        dy = int(np.sign(vy)) if abs(vy) > 0 else 0
+        if random.random() < 0.3:
+            dx = random.choice([-1, 0, 1])
+        if random.random() < 0.3:
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "PATROL":
+        x, y = drone["x"], drone["y"]
+        margin = 2
+        at_left = x <= BOUNDARY_MIN_X + margin
+        at_right = x >= BOUNDARY_MAX_X - margin
+        at_bottom = y <= BOUNDARY_MIN_Y + margin
+        at_top = y >= BOUNDARY_MAX_Y - margin
+        if at_bottom and not at_right:
+            dx, dy = 1, 0
+        elif at_right and not at_top:
+            dx, dy = 0, 1
+        elif at_top and not at_left:
+            dx, dy = -1, 0
+        elif at_left and not at_bottom:
+            dx, dy = 0, -1
+        else:
+            center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
+            dx = -1 if x > center_x else 1
+            dy = -1
+        if random.random() < 0.2:
+            dx += random.choice([-1, 0, 1])
+            dy += random.choice([-1, 0, 1])
+
+    elif mode == "SWARM":
+        vdrones = [d for did, d in active_drones.items()
+                   if did.startswith(VIRTUAL_PREFIX) or did.startswith(PHYSICAL_PREFIX)]
+        if len(vdrones) > 1:
+            cx = sum(d["x"] for d in vdrones) / len(vdrones)
+            cy = sum(d["y"] for d in vdrones) / len(vdrones)
+            vx = cx - drone["x"]
+            vy = cy - drone["y"]
+            dist = (vx**2 + vy**2) ** 0.5
+            if dist > 5:
+                dx = int(np.sign(vx))
+                dy = int(np.sign(vy))
+            else:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+            if random.random() < 0.4:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+        else:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "SCATTER":
+        center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
+        center_y = (BOUNDARY_MIN_Y + BOUNDARY_MAX_Y) // 2
+        vx = drone["x"] - center_x
+        vy = drone["y"] - center_y
+        dx = int(np.sign(vx)) if abs(vx) > 0 else random.choice([-1, 1])
+        dy = int(np.sign(vy)) if abs(vy) > 0 else random.choice([-1, 1])
+        if random.random() < 0.3:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "TRAIL_FOLLOW":
+        x, y = drone["x"], drone["y"]
+        best_dx, best_dy = 0, 0
+        best_pheromone = 0
+        for check_dx in [-1, 0, 1]:
+            for check_dy in [-1, 0, 1]:
+                nx = x + check_dx
+                ny = y + check_dy
+                if BOUNDARY_MIN_X <= nx <= BOUNDARY_MAX_X and BOUNDARY_MIN_Y <= ny <= BOUNDARY_MAX_Y:
+                    p = ghost_grid[nx][ny]
+                    p += random.random() * 5
+                    if p > best_pheromone:
+                        best_pheromone = p
+                        best_dx, best_dy = check_dx, check_dy
+        dx, dy = best_dx, best_dy
+        if best_pheromone < 1:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "AVOID":
+        neighbors = get_neighbors(drone_id, max_distance=8)
+        if neighbors:
+            closest_id = min(neighbors, key=lambda k: neighbors[k]["distance"])
+            closest = neighbors[closest_id]
+            if closest["distance"] < 3:
+                dx = -int(np.sign(closest["dx"])) if closest["dx"] != 0 else random.choice([-1, 1])
+                dy = -int(np.sign(closest["dy"])) if closest["dy"] != 0 else random.choice([-1, 1])
+            else:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+        else:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "FLOCK":
+        neighbors = get_neighbors(drone_id, max_distance=15)
+        dx, dy = 0, 0
+        if len(neighbors) == 0:
+            vdrones = [d for did, d in active_drones.items()
+                       if did.startswith(VIRTUAL_PREFIX) or did.startswith(PHYSICAL_PREFIX)]
+            if len(vdrones) > 1:
+                cx = sum(d["x"] for d in vdrones) / len(vdrones)
+                cy = sum(d["y"] for d in vdrones) / len(vdrones)
+                dx = int(np.sign(cx - drone["x"]))
+                dy = int(np.sign(cy - drone["y"]))
+            else:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+        else:
+            close = {k: v for k, v in neighbors.items() if v["distance"] < 3}
+            if close:
+                for ndata in close.values():
+                    dx -= int(np.sign(ndata["dx"])) if ndata["dx"] != 0 else 0
+                    dy -= int(np.sign(ndata["dy"])) if ndata["dy"] != 0 else 0
+                dx = int(np.sign(dx)) if dx != 0 else 0
+                dy = int(np.sign(dy)) if dy != 0 else 0
+            else:
+                avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
+                avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
+                dx = int(np.sign(avg_x))
+                dy = int(np.sign(avg_y))
+        if random.random() < 0.25:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+
+    elif mode == "BOIDS":
+        neighbors = get_neighbors(drone_id, max_distance=15)
+        sep_x, sep_y = 0, 0
+        coh_x, coh_y = 0, 0
+        ali_x, ali_y = 0, 0
+        if neighbors:
+            close = {k: v for k, v in neighbors.items() if v["distance"] < 4}
+            for ndata in close.values():
+                weight = 1.0 / max(ndata["distance"], 0.5)
+                sep_x -= ndata["dx"] * weight
+                sep_y -= ndata["dy"] * weight
+            avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
+            avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
+            coh_x = avg_x
+            coh_y = avg_y
+            vx_sum, vy_sum = 0, 0
+            count = 0
+            for nid in neighbors:
+                n = active_drones.get(nid, {})
+                vx_sum += n.get("vx", 0)
+                vy_sum += n.get("vy", 0)
+                count += 1
+            if count > 0:
+                ali_x = vx_sum / count
+                ali_y = vy_sum / count
+            total_x = sep_x * 2.0 + coh_x * 0.5 + ali_x * 1.0
+            total_y = sep_y * 2.0 + coh_y * 0.5 + ali_y * 1.0
+            dx = int(np.sign(total_x)) if abs(total_x) > 0.1 else 0
+            dy = int(np.sign(total_y)) if abs(total_y) > 0.1 else 0
+        else:
+            dx = random.choice([-1, 0, 1])
+            dy = random.choice([-1, 0, 1])
+        if random.random() < 0.15:
+            dx += random.choice([-1, 0, 1])
+            dy += random.choice([-1, 0, 1])
+            dx = int(np.sign(dx)) if dx != 0 else 0
+            dy = int(np.sign(dy)) if dy != 0 else 0
+
+    else:  # RANDOM (Default)
+        dx = random.choice([-1, 0, 1])
+        dy = random.choice([-1, 0, 1])
+
+    return dx, dy
+
+
 # --- PHYSICS ENGINE (Thread) ---
 def physics_loop():
-    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD, SIMULATION_MODE
-    
+    global hive_grid, ghost_grid, active_drones, DECAY_RATE, CURRENT_MOOD, SIMULATION_MODE, physical_drone_seq
+
     print("/// PHYSICS ENGINE STARTED ///")
     
     while True:
@@ -356,247 +603,8 @@ def physics_loop():
             if random.random() > VIRTUAL_DRONE_MOVE_CHANCE:
                 continue
 
-            dx, dy = 0, 0
-
-            # --- BEHAVIOR TREE ---
-            if SIMULATION_MODE == "FIND_QUEEN":
-                # Move towards Queen position (bottom-left corner)
-                target_x, target_y = SENSOR_POSITIONS["QUEEN"]
-
-                # Vector to target
-                vx = target_x - drone["x"]
-                vy = target_y - drone["y"]
-
-                # Normalize (Sign) + Random Noise
-                dx = int(np.sign(vx)) if abs(vx) > 0 else 0
-                dy = int(np.sign(vy)) if abs(vy) > 0 else 0
-
-                # Add randomness so they don't form a conga line
-                if random.random() < 0.3:
-                    dx = random.choice([-1, 0, 1])
-                if random.random() < 0.3:
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "PATROL":
-                # Patrol around the perimeter of the operational boundary
-                x, y = drone["x"], drone["y"]
-                margin = 2  # Distance from boundary edge for patrol path
-
-                # Determine which edge of boundary we're closest to and move clockwise
-                at_left = x <= BOUNDARY_MIN_X + margin
-                at_right = x >= BOUNDARY_MAX_X - margin
-                at_bottom = y <= BOUNDARY_MIN_Y + margin
-                at_top = y >= BOUNDARY_MAX_Y - margin
-
-                if at_bottom and not at_right:
-                    dx, dy = 1, 0  # Bottom edge: move right
-                elif at_right and not at_top:
-                    dx, dy = 0, 1  # Right edge: move up
-                elif at_top and not at_left:
-                    dx, dy = -1, 0  # Top edge: move left
-                elif at_left and not at_bottom:
-                    dx, dy = 0, -1  # Left edge: move down
-                else:
-                    # Not on perimeter, move toward nearest boundary edge
-                    center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
-                    dx = -1 if x > center_x else 1
-                    dy = -1  # Head toward bottom edge
-
-                # Add slight randomness
-                if random.random() < 0.2:
-                    dx += random.choice([-1, 0, 1])
-                    dy += random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "SWARM":
-                # Flocking behavior: stay together as a group
-                # Calculate center of mass of all virtual drones
-                vdrones = [d for did, d in active_drones.items() if did.startswith(VIRTUAL_PREFIX)]
-                if len(vdrones) > 1:
-                    cx = sum(d["x"] for d in vdrones) / len(vdrones)
-                    cy = sum(d["y"] for d in vdrones) / len(vdrones)
-
-                    # Cohesion: move toward center of swarm
-                    vx = cx - drone["x"]
-                    vy = cy - drone["y"]
-
-                    # Only apply cohesion if far from center
-                    dist = (vx**2 + vy**2) ** 0.5
-                    if dist > 5:
-                        dx = int(np.sign(vx))
-                        dy = int(np.sign(vy))
-                    else:
-                        # Close to swarm, random wander
-                        dx = random.choice([-1, 0, 1])
-                        dy = random.choice([-1, 0, 1])
-
-                    # Add random movement to prevent stacking
-                    if random.random() < 0.4:
-                        dx = random.choice([-1, 0, 1])
-                        dy = random.choice([-1, 0, 1])
-                else:
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "SCATTER":
-                # Scatter: move away from boundary center toward edges
-                center_x = (BOUNDARY_MIN_X + BOUNDARY_MAX_X) // 2
-                center_y = (BOUNDARY_MIN_Y + BOUNDARY_MAX_Y) // 2
-                vx = drone["x"] - center_x
-                vy = drone["y"] - center_y
-
-                # Move away from center
-                dx = int(np.sign(vx)) if abs(vx) > 0 else random.choice([-1, 1])
-                dy = int(np.sign(vy)) if abs(vy) > 0 else random.choice([-1, 1])
-
-                # Add randomness
-                if random.random() < 0.3:
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "TRAIL_FOLLOW":
-                # Follow pheromone trails in the ghost grid (within boundary)
-                x, y = drone["x"], drone["y"]
-                best_dx, best_dy = 0, 0
-                best_pheromone = 0
-
-                # Check all 8 neighbors + current (only within boundary)
-                for check_dx in [-1, 0, 1]:
-                    for check_dy in [-1, 0, 1]:
-                        nx = x + check_dx
-                        ny = y + check_dy
-                        if BOUNDARY_MIN_X <= nx <= BOUNDARY_MAX_X and BOUNDARY_MIN_Y <= ny <= BOUNDARY_MAX_Y:
-                            p = ghost_grid[nx][ny]
-                            # Add randomness to break ties and explore
-                            p += random.random() * 5
-                            if p > best_pheromone:
-                                best_pheromone = p
-                                best_dx, best_dy = check_dx, check_dy
-
-                dx, dy = best_dx, best_dy
-
-                # If no pheromones nearby, random walk
-                if best_pheromone < 1:
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "AVOID":
-                # Pure separation - maintain distance from neighbors
-                neighbors = get_neighbors(v_id, max_distance=8)
-
-                if neighbors:
-                    # Find closest neighbor
-                    closest_id = min(neighbors, key=lambda k: neighbors[k]["distance"])
-                    closest = neighbors[closest_id]
-
-                    if closest["distance"] < 3:
-                        # Too close - move directly away
-                        dx = -int(np.sign(closest["dx"])) if closest["dx"] != 0 else random.choice([-1, 1])
-                        dy = -int(np.sign(closest["dy"])) if closest["dy"] != 0 else random.choice([-1, 1])
-                    else:
-                        # Comfortable distance, random walk
-                        dx = random.choice([-1, 0, 1])
-                        dy = random.choice([-1, 0, 1])
-                else:
-                    # No neighbors, random walk
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "FLOCK":
-                # Cohesion + separation - stay together but don't stack
-                neighbors = get_neighbors(v_id, max_distance=15)
-
-                dx, dy = 0, 0
-
-                if len(neighbors) == 0:
-                    # Isolated - move toward swarm center
-                    vdrones = [d for did, d in active_drones.items() if did.startswith(VIRTUAL_PREFIX)]
-                    if len(vdrones) > 1:
-                        cx = sum(d["x"] for d in vdrones) / len(vdrones)
-                        cy = sum(d["y"] for d in vdrones) / len(vdrones)
-                        dx = int(np.sign(cx - drone["x"]))
-                        dy = int(np.sign(cy - drone["y"]))
-                    else:
-                        dx = random.choice([-1, 0, 1])
-                        dy = random.choice([-1, 0, 1])
-                else:
-                    # Check for close neighbors (separation)
-                    close = {k: v for k, v in neighbors.items() if v["distance"] < 3}
-                    if close:
-                        # Move away from close neighbors
-                        for ndata in close.values():
-                            dx -= int(np.sign(ndata["dx"])) if ndata["dx"] != 0 else 0
-                            dy -= int(np.sign(ndata["dy"])) if ndata["dy"] != 0 else 0
-                        # Normalize
-                        dx = int(np.sign(dx)) if dx != 0 else 0
-                        dy = int(np.sign(dy)) if dy != 0 else 0
-                    else:
-                        # Cohesion - move toward neighbor center
-                        avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
-                        avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
-                        dx = int(np.sign(avg_x))
-                        dy = int(np.sign(avg_y))
-
-                # Add randomness to prevent deadlock
-                if random.random() < 0.25:
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-            elif SIMULATION_MODE == "BOIDS":
-                # Full Boids: separation + cohesion + alignment
-                neighbors = get_neighbors(v_id, max_distance=15)
-
-                sep_x, sep_y = 0, 0  # Separation force
-                coh_x, coh_y = 0, 0  # Cohesion force
-                ali_x, ali_y = 0, 0  # Alignment force
-
-                if neighbors:
-                    # SEPARATION - avoid close neighbors
-                    close = {k: v for k, v in neighbors.items() if v["distance"] < 4}
-                    for ndata in close.values():
-                        # Inverse weight by distance (closer = stronger repulsion)
-                        weight = 1.0 / max(ndata["distance"], 0.5)
-                        sep_x -= ndata["dx"] * weight
-                        sep_y -= ndata["dy"] * weight
-
-                    # COHESION - move toward center of neighbors
-                    avg_x = sum(n["dx"] for n in neighbors.values()) / len(neighbors)
-                    avg_y = sum(n["dy"] for n in neighbors.values()) / len(neighbors)
-                    coh_x = avg_x
-                    coh_y = avg_y
-
-                    # ALIGNMENT - match velocity of neighbors
-                    vx_sum, vy_sum = 0, 0
-                    count = 0
-                    for nid in neighbors:
-                        n = active_drones.get(nid, {})
-                        vx_sum += n.get("vx", 0)
-                        vy_sum += n.get("vy", 0)
-                        count += 1
-                    if count > 0:
-                        ali_x = vx_sum / count
-                        ali_y = vy_sum / count
-
-                    # Combine forces with weights
-                    total_x = sep_x * 2.0 + coh_x * 0.5 + ali_x * 1.0
-                    total_y = sep_y * 2.0 + coh_y * 0.5 + ali_y * 1.0
-
-                    dx = int(np.sign(total_x)) if abs(total_x) > 0.1 else 0
-                    dy = int(np.sign(total_y)) if abs(total_y) > 0.1 else 0
-                else:
-                    # No neighbors - random walk
-                    dx = random.choice([-1, 0, 1])
-                    dy = random.choice([-1, 0, 1])
-
-                # Add slight randomness
-                if random.random() < 0.15:
-                    dx += random.choice([-1, 0, 1])
-                    dy += random.choice([-1, 0, 1])
-                    dx = int(np.sign(dx)) if dx != 0 else 0
-                    dy = int(np.sign(dy)) if dy != 0 else 0
-
-            else:  # RANDOM (Default)
-                dx = random.choice([-1, 0, 1])
-                dy = random.choice([-1, 0, 1])
+            # Calculate behavior vector using shared function
+            dx, dy = calculate_behavior_vector(v_id, drone, SIMULATION_MODE)
             
             # Constrain to operational boundary
             new_x = int(max(BOUNDARY_MIN_X, min(BOUNDARY_MAX_X, drone["x"] + dx)))
@@ -626,7 +634,23 @@ def physics_loop():
             # Publish to MQTT for logger to record
             rssi = drone.get("rssi", -50)
             client.publish("hive/deposit", f"VIRTUAL,{v_id},{new_x},{new_y},{intensity},{rssi}")
-        
+
+        # 2b. Update Physical Drones (send movement commands via MQTT)
+        physical_ids = [d for d in active_drones if d.startswith(PHYSICAL_PREFIX)]
+        for p_id in physical_ids:
+            drone = active_drones[p_id]
+
+            # Skip stale physical drones (no position report in 5s)
+            if time.time() - drone.get("last_seen", 0) > 5.0:
+                continue
+
+            dx, dy = calculate_behavior_vector(p_id, drone, SIMULATION_MODE)
+
+            if dx != 0 or dy != 0:
+                physical_drone_seq += 1
+                cmd = json.dumps({"dx": dx, "dy": dy, "seq": physical_drone_seq})
+                client.publish(f"hive/drone/{p_id}/move", cmd)
+
         # 3. Save State for Dashboard (The "Mental Image")
         # We convert numpy array to standard list for JSON
         state = {
